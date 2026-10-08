@@ -1,0 +1,5 @@
+{% extends 'base.html' %}{% block title %}Log in · Bill Payment Tracker{% endblock %}
+{% block content %}<section class="login-card"><div class="login-logo">$</div><h1>Welcome back</h1><p class="muted">Sign in to manage your bills securely.</p>
+<form method="post" class="stack">{% csrf_token %}{% if form.errors %}<div class="error-box">Your username or password was incorrect.</div>{% endif %}
+<label>Username{{ form.username }}</label><label>Password{{ form.password }}</label><button class="button primary" type="submit">Sign in</button></form></section>{% endblock %}
+

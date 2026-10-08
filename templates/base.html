@@ -1,0 +1,15 @@
+{% load static %}
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}Bill Payment Tracker{% endblock %}</title><link rel="stylesheet" href="{% static 'app.css' %}"></head>
+<body>
+{% if user.is_authenticated %}
+<header class="topbar"><a class="brand" href="{% url 'dashboard' %}"><span class="brand-mark">$</span><span>Bill Payment Tracker</span></a>
+<button class="menu-button" type="button" aria-label="Toggle menu" onclick="document.querySelector('.nav').classList.toggle('open')">☰</button>
+<nav class="nav"><a href="{% url 'dashboard' %}">Dashboard</a><a href="{% url 'account_list' %}">Accounts</a><a href="{% url 'provider_list' %}">Providers</a><a href="{% url 'payment_list' %}">Payments</a><a href="{% url 'reports' %}">Reports</a><a href="{% url 'reminders' %}">Reminders</a><a href="{% url 'settings' %}">Settings</a><form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="nav-link">Log out</button></form></nav></header>
+{% endif %}
+<main class="container {% if not user.is_authenticated %}auth-container{% endif %}">
+{% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+{% block content %}{% endblock %}</main>
+<script>document.querySelectorAll('[data-confirm]').forEach(f=>f.addEventListener('submit',e=>{if(!confirm(f.dataset.confirm))e.preventDefault()}));</script>
+</body></html>
+

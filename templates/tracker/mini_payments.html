@@ -1,0 +1,2 @@
+<div class="mini-list">{% for p in items %}<a href="{% url 'payment_edit' p.pk %}"><div><strong>{{ p.bill_account.provider.name }}</strong><span>{{ p.due_date }}</span></div><b>${{ p.amount_due|floatformat:2 }}</b></a>{% empty %}<p class="empty">{{ empty_text }}</p>{% endfor %}</div>
+
