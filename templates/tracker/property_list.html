@@ -1,0 +1,2 @@
+{% extends 'base.html' %}{% block content %}<div class="page-head"><div><h1>Properties</h1><p class="muted">Your homes, owned or rented. Accounts and bills are grouped by property.</p></div><a class="button primary" href="{% url 'property_add' %}">+ Add property</a></div>
+{% include 'tracker/property_cards.html' with manage=True %}{% endblock %}

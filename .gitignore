@@ -1,8 +1,16 @@
+# Secrets and local settings (templates are .env.example and deploy/production.env.example)
 .env
+.env.*
+!.env.example
+# Personal data: bill PDFs, backups, uploads, local databases
+All Bills/
+backups/
+*.partial
+media/
+db.sqlite3
+# Build and editor leftovers
 __pycache__/
 *.py[cod]
-db.sqlite3
-media/
 staticfiles/
 .venv/
-
+.DS_Store

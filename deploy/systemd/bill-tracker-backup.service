@@ -1,0 +1,10 @@
+# Nightly backup of the bill tracker database and uploaded bills (docs/DEPLOY.md, "Backups").
+# Installed to /etc/systemd/system/ and started by bill-tracker-backup.timer.
+[Unit]
+Description=Bill tracker backup (database and uploaded bills)
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/bill-tracker/scripts/backup.sh

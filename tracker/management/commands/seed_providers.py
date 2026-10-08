@@ -13,7 +13,7 @@ PROVIDERS = [
  ("City of Toronto","water","ON"),("Region of Peel","water","ON"),("York Region","water","ON"),
  ("City of Mississauga","water","ON"),("City of Brampton","water","ON"),("City of Ottawa","water","ON"),
  ("City of Calgary","water","AB"),("City of Edmonton","water","AB"),("City of Vancouver","water","BC"),
- ("City of Montreal","water","QC"),
+ ("City of Montreal","water","QC"),("Municipality of North Grenville","water","ON"),
 ]
 class Command(BaseCommand):
     help = "Idempotently seed built-in Canadian service providers."

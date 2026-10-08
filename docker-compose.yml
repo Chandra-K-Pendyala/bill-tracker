@@ -1,15 +1,33 @@
+# Settings come from .env next to this file. On a laptop: .env.example + scripts/init-secrets.sh.
+# On the server: deploy/production.env.example + scripts/init-secrets.sh (docs/DEPLOY.md).
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Servers running Watchtower would update and restart these containers on their own;
+# updates go through scripts/deploy.sh instead, so every service opts out.
+x-labels: &labels
+  com.centurylinklabs.watchtower.enable: "false"
+
 services:
   app:
     build: .
     restart: unless-stopped
     env_file: ${ENV_FILE:-.env}
     ports:
-      - "${APP_PORT:-8008}:8000"
+      # Listens on this computer only by default. Set APP_BIND=0.0.0.0 in .env to open it to your LAN.
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8008}:8000"
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - uploads:/app/media
+    mem_limit: 512m
+    logging: *logging
+    labels: *labels
   db:
     image: postgres:17-alpine
     restart: unless-stopped
@@ -21,6 +39,24 @@ services:
       retries: 10
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    mem_limit: 512m
+    logging: *logging
+    labels: *labels
+  # Cloudflare Tunnel connector for the server; starts only when .env has COMPOSE_PROFILES=tunnel
+  # (scripts/set-tunnel-token.sh sets it). The tunnel's public hostname points at http://app:8000.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.9.3
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      app:
+        condition: service_healthy
+    mem_limit: 128m
+    logging: *logging
+    labels: *labels
 volumes:
   postgres_data:
   uploads:

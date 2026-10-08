@@ -1,0 +1,12 @@
+# Runs bill-tracker-backup.service every night, after the cookbook's 03:30 backup; a night
+# missed while the server was off runs at the next boot (Persistent).
+[Unit]
+Description=Nightly bill tracker backup
+
+[Timer]
+OnCalendar=*-*-* 03:50:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

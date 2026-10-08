@@ -1,11 +1,17 @@
+import shutil
+import tempfile
 from datetime import date
 from decimal import Decimal
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
-from .models import Attachment, BillAccount, BillPayment, Provider
+from tracker.models import Attachment, BillAccount, BillPayment, Provider
 
+MEDIA_ROOT = tempfile.mkdtemp()
+def tearDownModule(): shutil.rmtree(MEDIA_ROOT, ignore_errors=True)
+
+@override_settings(MEDIA_ROOT=MEDIA_ROOT)
 class TrackerTests(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -44,8 +50,8 @@ class TrackerTests(TestCase):
     def test_account_and_payment_can_be_created_with_custom_provider(self):
         self.client.force_login(self.user)
         response = self.client.post(reverse("account_add"), {"provider": self.custom.pk, "account_number": "CUSTOM-1", "email": "", "service_address": "2 Main St", "city": "Toronto", "province": "ON", "postal_code": "M2M 2M2", "country": "Canada", "billing_frequency": "monthly", "typical_amount": "44.50", "due_day": "10", "active": "on", "notes": ""})
-        self.assertRedirects(response, reverse("account_list"))
         account = BillAccount.objects.get(account_number="CUSTOM-1")
+        self.assertRedirects(response, reverse("account_detail", args=[account.pk]))
         self.assertEqual(account.owner, self.user)
         response = self.client.post(reverse("payment_add"), {"bill_account": account.pk, "billing_month": "8", "billing_year": "2026", "amount_due": "44.50", "amount_paid": "44.50", "payment_date": "2026-08-08", "due_date": "2026-08-10", "status": "paid", "payment_method": "bank_transfer", "reference_number": "REF-1", "notes": ""})
         self.assertRedirects(response, reverse("payment_list"))
@@ -59,10 +65,15 @@ class TrackerTests(TestCase):
         self.assertFalse(BillAccount.objects.filter(account_number="BAD").exists())
 
     def test_filtered_csv_contains_only_matching_payment(self):
+        other_account = BillAccount.objects.create(owner=self.user, provider=self.custom, account_number="ACC-999", service_address="9 Side St", city="Toronto", province="ON", postal_code="M1M 1M1")
+        BillPayment.objects.create(owner=self.user, bill_account=other_account, billing_month=7, billing_year=2026, amount_due=Decimal("5"), due_date=date(2026, 7, 15))
+        BillPayment.objects.create(owner=self.user, bill_account=self.account, billing_month=7, billing_year=2025, amount_due=Decimal("7"), due_date=date(2025, 7, 15))
         self.client.force_login(self.user)
         response = self.client.get(reverse("export_payments"), {"year": 2026, "provider": self.default.pk})
         self.assertEqual(response["Content-Type"], "text/csv")
-        self.assertIn(b"Hydro Test", response.content)
+        rows = response.content.decode().strip().splitlines()
+        self.assertEqual(len(rows), 2, rows)
+        self.assertIn("Hydro Test,ACC-123,7,2026", rows[1])
 
     def test_attachment_download_is_owner_scoped(self):
         attachment = Attachment.objects.create(payment=self.payment, file=SimpleUploadedFile("bill.pdf", b"pdf-content", content_type="application/pdf"), original_name="bill.pdf")
@@ -71,4 +82,5 @@ class TrackerTests(TestCase):
         self.client.force_login(self.user)
         response = self.client.get(reverse("attachment_download", args=[attachment.pk]))
         self.assertEqual(response.status_code, 200)
-        response.close()
+        # Consume the stream rather than calling close(): close() fires request_finished, which drops the test's DB connection.
+        self.assertEqual(b"".join(response.streaming_content), b"pdf-content")

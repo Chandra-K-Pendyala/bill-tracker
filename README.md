@@ -1,90 +1,103 @@
 # Bill Payment Tracker
 
-A self-hosted, responsive bill and payment tracker for Canadian households. It includes local authentication, built-in Canadian providers, custom providers, recurring account records, monthly payment history, reminders, KPI reports, charts, protected attachments, and CSV exports.
+A self-hosted, responsive bill and payment tracker for Canadian households. It groups accounts by property (owned or rented), reads Hydro One, Enbridge Gas and North Grenville water bill PDFs into payment records, and includes local authentication, built-in Canadian providers, custom providers, monthly payment history, reminders, KPI reports, charts, protected attachments, and CSV exports.
+
+See [CHANGELOG.md](CHANGELOG.md) for what changed in each version. To run it on the funprojects server at https://bills.whobrokeprod.com, follow [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ## Stack
 
-- Django 5.2 and Gunicorn
+- Django 5.2 LTS and Gunicorn
 - PostgreSQL 17
 - Server-rendered HTML/CSS and dependency-free canvas charts
+- poppler-utils (`pdftotext`) to read bill PDFs
 - Docker Compose with persistent database and upload volumes
 
 All application routes require login. Passwords use Django's secure password hashers, POST forms use CSRF tokens, records are owner-scoped, and uploaded bills are available only through an authenticated download endpoint. The app never stores provider website passwords.
 
 ## Quick start
 
-Requirements: Docker Engine with Docker Compose v2.
+Requirements: Docker Engine with Docker Compose v2, and `python3` on the host (used only to generate secrets).
 
-1. Create the local environment file:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-2. Edit `.env`. Replace `SECRET_KEY`, `POSTGRES_PASSWORD`, and `ADMIN_PASSWORD`. Generate a secret with:
+1. Create `.env` with random secrets:
 
    ```bash
-   python3 -c 'import secrets; print(secrets.token_urlsafe(50))'
+   scripts/init-secrets.sh
    ```
 
-   Keep the password in `DATABASE_URL` synchronized with `POSTGRES_PASSWORD`. URL-encode special characters used in that URL.
-   If port 8000 is already used, set `APP_PORT` to another host port and update `CSRF_TRUSTED_ORIGINS` to match.
+   It copies `.env.example` and fills in `SECRET_KEY`, `POSTGRES_PASSWORD`, `DATABASE_URL` and `ADMIN_PASSWORD`. On an install whose database already exists, it also changes the database and admin passwords to match; start the database first with `docker compose up -d db`. Run it with `--force` to replace secrets that are already set.
 
-3. Build and start:
+2. Build and start:
 
    ```bash
    docker compose up -d --build
    docker compose ps
-   docker compose logs -f app
    ```
 
-4. Visit [http://localhost:8008](http://localhost:8008) and sign in with `ADMIN_USERNAME` and `ADMIN_PASSWORD` from `.env`.
+3. Open [http://localhost:8008](http://localhost:8008) and sign in as `admin`. The password is `ADMIN_PASSWORD` in `.env`:
 
-The initial admin is created on the first start. Later container starts never overwrite its password. Change it from **Settings** after signing in.
+   ```bash
+   grep ADMIN_PASSWORD .env
+   ```
 
-For access from another device on your LAN, add the server hostname/IP to `ALLOWED_HOSTS`, add the full origin (for example `http://192.168.1.10:8000`) to `CSRF_TRUSTED_ORIGINS`, then restart the app:
+   Change it under **Settings** after signing in. Later container starts never overwrite it; `docker compose exec app python manage.py create_admin --reset-password` sets it back to `ADMIN_PASSWORD`.
 
-```bash
-docker compose up -d
-```
+The app listens on this computer only (127.0.0.1). To use it from another device on a trusted home network, set `APP_BIND=0.0.0.0` in `.env`, add the computer's address to `ALLOWED_HOSTS` (for example `192.168.1.10`) and the full origin to `CSRF_TRUSTED_ORIGINS` (for example `http://192.168.1.10:8008`), then run `docker compose up -d`. The connection is plain HTTP, so don't do this on a network you don't trust.
 
 ## Using the app
 
-1. **Providers:** search the seeded Canadian provider directory. Choose **Add custom provider** when a service is missing. Seeded providers are locked; only your custom providers can be edited or deleted.
-2. **Accounts:** add the account number, provider-associated email, service address, frequency, typical amount, due day, and auto-pay state. A newly created custom provider appears immediately in this form.
-3. **Payments:** add one record per account and billing month. Track due/paid amounts, dates, status, payment method, reference, notes, and an optional PDF/image attachment up to 10 MB.
-4. **Dashboard and reminders:** see current month/year totals, outstanding bills, trends, categories, top providers, upcoming bills, and overdue bills.
-5. **Reports:** filter by month, year, provider, category, status, province, or address. Export the filtered payment history as CSV. Accounts have a separate CSV export.
+1. **Properties:** add each home and mark it owned or rented.
+2. **Import bills:** **Payments → Import bills**. Choose one or more PDFs. Supported: Hydro One, Enbridge Gas, Municipality of North Grenville water. Choosing a property is only needed when a bill's account is new and its street address doesn't match a property.
+3. **Accounts:** created by an import, or added by hand. Open an account to see its history and charts.
+4. **Payments:** one record per account and billing month. Use **Mark paid** when you pay a bill. Bills the import doesn't support can be added by hand, with an optional PDF or image up to 10 MB.
+5. **Dashboard and reminders:** open balance, bills due in the next 30 days, overdue bills, and totals by property, category and provider.
+6. **Reports:** filter by property, month, year, provider, category, status, province or address, and export the result as CSV. Accounts have a separate CSV export.
 
-## Persistence and backups
+How the import fills in records:
 
-Compose creates `postgres_data` and `uploads` named volumes. Normal restarts and container recreation preserve both. `docker compose down -v` intentionally deletes them.
+- Each bill becomes the record for the month of its statement date. The amount is that bill's own charges; a balance carried forward stays on the earlier bill.
+- Bills list the payments received since the previous bill, so importing a new bill marks the previous one paid, with the payment date when the bill prints one. North Grenville water bills don't print payment dates, so those show as paid with no date.
+- A bill that's already recorded is skipped, so importing the same file twice is safe. Within one upload, bills are applied oldest first.
+- Payment status comes from the amounts (paid, partially paid, unpaid). A bill that isn't paid by its due date shows as overdue.
 
-Back up the database:
+## Importing a folder of bills
 
-```bash
-docker compose exec -T db pg_dump -U bill_tracker bill_tracker > bill_tracker_backup.sql
-```
-
-Restore into an empty database:
-
-```bash
-docker compose exec -T db psql -U bill_tracker bill_tracker < bill_tracker_backup.sql
-```
-
-List the volume names before arranging a filesystem-level upload backup:
+Put the PDFs in a folder named `All Bills` in the project directory (subfolders are fine), then run:
 
 ```bash
-docker volume ls | grep bill_tracker
+docker compose run --rm -v "$PWD/All Bills:/import:ro" app python manage.py import_bills --user admin /import
 ```
+
+Add `--dry-run` to read the bills and show what would be imported without saving anything. Bills are imported oldest first, and running the command again skips bills that are already recorded. The folder is mounted read-only and is never copied into the image.
+
+## Backups
+
+Save the database and the uploaded bills while the stack is running:
+
+```bash
+scripts/backup.sh
+```
+
+It writes `bill_tracker-db-<timestamp>.sql.gz` and `bill_tracker-uploads-<timestamp>.tar.gz` into `backups/` and keeps the newest 14 of each (set `KEEP` to change this). The files are readable only by you.
+
+Restore into a new install (start its database first with `docker compose up -d db`):
+
+```bash
+scripts/restore.sh backups/bill_tracker-db-<timestamp>.sql.gz backups/bill_tracker-uploads-<timestamp>.tar.gz
+scripts/up.sh
+```
+
+On a database that already has data, add `--replace`. It asks you to type `replace`, then wipes the database and restores the backup.
+
+Backups read `BACKUP_DIR`, `BACKUP_KEEP` and `BACKUP_PUSH_URL` (an optional Uptime Kuma push URL) from the environment or `.env`.
+
+Compose keeps the data in the `postgres_data` and `uploads` named volumes. Normal restarts and container recreation preserve both. `docker compose down -v` deletes them.
 
 ## Updates and administration
 
-Apply a new version:
+Apply a new version (builds the image, starts the stack, waits until it is healthy and checks the app):
 
 ```bash
-docker compose up -d --build
-docker compose logs --tail=100 app
+scripts/up.sh
 ```
 
 Migrations and provider seeding run idempotently at app startup. To create another administrator:
@@ -99,32 +112,24 @@ Stop without deleting data:
 docker compose down
 ```
 
-## Verification by phase
-
-These commands mirror the implementation phases and can be run after changes:
+## Verification
 
 ```bash
-# 1–2: project and Compose configuration
-docker compose config
-docker compose build
-
-# 3: schema and migrations
-docker compose run --rm app python manage.py migrate --check
-docker compose run --rm app python manage.py makemigrations --check --dry-run
-
-# 4–8: authentication, provider/account/payment workflows
-docker compose run --rm app python manage.py test tracker
-
-# 9–11: dashboard, reports, charts, exports (framework checks)
-docker compose run --rm app python manage.py check
-
-# 12: running service health
-docker compose up -d
+docker compose config --quiet
+docker compose exec app python manage.py check
+docker compose exec app python manage.py makemigrations --check --dry-run
+docker compose exec app python manage.py test tracker
 docker compose ps
-curl -I http://localhost:8008/login/
+curl http://localhost:8008/health/
 ```
 
-For local development without Docker, Python 3.10+ is required:
+`/health/` answers `ok` without a login when the app can reach its database.
+
+The tests use their own temporary database and upload folder, so they don't touch your data.
+
+## Local development without Docker
+
+Requires Python 3.10 or newer (Django 5.2 doesn't run on the macOS system Python 3.9) and poppler for bill imports (`brew install poppler` on macOS).
 
 ```bash
 python3 -m venv .venv
@@ -136,26 +141,32 @@ python manage.py createsuperuser
 python manage.py runserver
 ```
 
-SQLite is selected automatically when `DATABASE_URL` is absent, making this local workflow lightweight. Docker always uses PostgreSQL.
+SQLite is selected automatically when `DATABASE_URL` is absent, and `DEBUG` defaults to true outside Docker. Docker always uses PostgreSQL.
 
 To validate Compose before creating `.env`, use `ENV_FILE=.env.example docker compose config`.
 
 ## Security notes
 
-- Do not commit `.env`; it is ignored by Git.
-- Use a unique admin password and a long random `SECRET_KEY`.
-- Put the service behind HTTPS (Caddy/Nginx or a trusted VPN) before exposing it beyond a trusted LAN.
-- Restrict access to the Docker host and include both database and upload volumes in backups.
-- Attachment extensions are allow-listed, size-limited, renamed on disk, and downloaded only after an ownership check.
+- `.env` holds the secrets. It is ignored by Git, kept out of the Docker build, and `scripts/init-secrets.sh` writes it readable only by you.
+- The app refuses to start with `DEBUG=false` and a placeholder `SECRET_KEY`.
+- By default the app is reachable only from this computer. Put it behind HTTPS (Caddy/Nginx or a trusted VPN) before exposing it beyond a trusted LAN.
+- Imported bills are read with `pdftotext` in a time-limited subprocess, and must start with a PDF header and be 10 MB or smaller. Attachments added by hand are limited to PDF and image extensions and 10 MB.
+- Attachments are renamed on disk, downloaded only after an ownership check, and deleted when their record is deleted.
+- Include both the database and the uploads in backups (`scripts/backup.sh` does both).
 
 ## Project layout
 
 ```text
-bill_tracker/        Django configuration
-tracker/             models, forms, views, routes, migrations, tests, commands
+bill_tracker/        Django configuration (and the en-CA number format override)
+tracker/             models, forms, views, routes, migrations, commands
+tracker/bill_import.py   reading bill PDFs into payment records
+tracker/tests/       tests and anonymized bill-text fixtures
 templates/           responsive application pages
 static/              CSS and local chart renderer
+scripts/             init-secrets, up, backup, restore, deploy (server: pull and restart), set-tunnel-token
+deploy/              server settings template and the nightly backup timer
+docs/DEPLOY.md       runbook for the funprojects server
 Dockerfile           application image
-docker-compose.yml   app, PostgreSQL, and persistent volumes
+docker-compose.yml   app, PostgreSQL, persistent volumes, and the Cloudflare Tunnel connector (off unless enabled)
 entrypoint.sh        migrations, seed, admin bootstrap, and Gunicorn startup
 ```

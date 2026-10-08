@@ -1,10 +1,15 @@
 .git
 .gitignore
 .env
+.env.*
+!.env.example
 .venv
+.DS_Store
 __pycache__
 *.pyc
 db.sqlite3
 media
 staticfiles
-
+backups
+All Bills
+docs

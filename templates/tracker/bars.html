@@ -1,0 +1,1 @@
+<div class="bar-list">{% for row in rows %}<div class="bar-row"><span>{{ row.label }}</span><div class="bar" aria-hidden="true"><i style="width: {{ row.pct }}%"></i></div><strong>${{ row.total|floatformat:"2g" }}</strong></div>{% empty %}<p class="empty">{{ empty_text|default:"No bills yet." }}</p>{% endfor %}</div>

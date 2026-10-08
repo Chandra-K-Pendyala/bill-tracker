@@ -1,10 +1,13 @@
 import os
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
+from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv("SECRET_KEY", "unsafe-development-only-key")
 DEBUG = os.getenv("DEBUG", "true").lower() == "true"
+if not DEBUG and (SECRET_KEY.startswith(("unsafe-", "replace-with")) or len(SECRET_KEY) < 32):
+    raise ImproperlyConfigured("SECRET_KEY is a placeholder. Set a long random value in .env (see README).")
 ALLOWED_HOSTS = [x.strip() for x in os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if x.strip()]
 CSRF_TRUSTED_ORIGINS = [x.strip() for x in os.getenv("CSRF_TRUSTED_ORIGINS", "http://localhost:8000").split(",") if x.strip()]
 
@@ -32,7 +35,7 @@ database_url = os.getenv("DATABASE_URL")
 if database_url:
     db = urlparse(database_url)
     DATABASES = {"default": {"ENGINE": "django.db.backends.postgresql", "NAME": db.path.lstrip("/"),
-        "USER": db.username, "PASSWORD": db.password, "HOST": db.hostname, "PORT": db.port or 5432}}
+        "USER": unquote(db.username or ""), "PASSWORD": unquote(db.password or ""), "HOST": db.hostname, "PORT": db.port or 5432}}
 else:
     DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3"}}
 
@@ -43,6 +46,7 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 LANGUAGE_CODE = "en-ca"
+FORMAT_MODULE_PATH = ["bill_tracker.formats"]
 TIME_ZONE = os.getenv("TIME_ZONE", "America/Toronto")
 USE_I18N = True
 USE_TZ = True
@@ -70,3 +74,8 @@ CSRF_COOKIE_SECURE = SECURE_SSL_REDIRECT
 SECURE_HSTS_SECONDS = 31536000 if SECURE_SSL_REDIRECT else 0
 SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_SSL_REDIRECT
 SECURE_HSTS_PRELOAD = SECURE_SSL_REDIRECT
+SECURE_REDIRECT_EXEMPT = [r"^health/$"]  # container and deploy health checks use plain HTTP on 127.0.0.1
+# Behind a proxy that terminates HTTPS (the Cloudflare Tunnel), trust its X-Forwarded-Proto header so those
+# requests count as secure. Set this only when the proxy is the only way in, as when the app port is on 127.0.0.1.
+if os.getenv("TRUST_X_FORWARDED_PROTO", "false").lower() == "true":
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
