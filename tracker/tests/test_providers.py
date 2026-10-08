@@ -9,7 +9,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from tracker.bill_import import BillImportError, _clean_name, _guess_category, detect_provider, import_bills, parse_bill, recognize_provider
+from tracker.bill_import import BillImportError, _clean_name, _guess_category, detect_provider, import_bills, match_property, parse_bill, recognize_provider
 from tracker.models import BillAccount, BillPayment, Property, Provider
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -354,3 +354,58 @@ class DetectProviderTests(SimpleTestCase):
         self.assertEqual(_guess_category("Tier 1 - 1710 GAL", "Acme Meter Solutions"), "water")
         self.assertEqual(_guess_category("Monthly plan", "Acme Wireless"), "mobile")
         self.assertEqual(_guess_category("Delivered 300 L", "Acme Propane"), "other")
+
+
+@override_settings(MEDIA_ROOT=MEDIA_ROOT)
+class PropertyMatchTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user("alice", password="x-safe-pass-123")
+        Provider.objects.create(name="Toronto Hydro", category="electricity", is_default=True, is_custom=False)
+
+    def home(self, name, street, postal="K1A 0A1"):
+        return Property.objects.create(owner=self.user, name=name, ownership="owned", street_address=street, city="Toronto", province="ON", postal_code=postal)
+
+    def test_street_number_and_name(self):
+        home = self.home("De Grassi", "52 De Grassi St, Unit 1")
+        self.assertEqual(match_property(self.user, "UNIT 1-52 DE GRASSI ST"), (home, "street"))
+
+    def test_unit_decides_between_homes_on_one_street(self):
+        four, nine = self.home("Four", "7 Elm Way, Unit 4"), self.home("Nine", "7 Elm Way, Unit 9")
+        self.assertEqual(match_property(self.user, "9-7 Elm Way"), (nine, "unit"))
+        self.assertEqual(match_property(self.user, "7 ELM WAY (E) SUITE 4, TORONTO"), (four, "unit"))
+
+    def test_street_name_typed_a_little_differently(self):
+        home = self.home("Lake", "7 Lakshore Way")
+        self.assertEqual(match_property(self.user, "7 LAKESHORE WAY"), (home, "similar street name"))
+        home.street_address = "7 LakeshoreWay"
+        home.save()
+        self.assertEqual(match_property(self.user, "7 LAKESHORE WAY"), (home, "similar street name"))
+
+    def test_postal_code_when_the_street_does_not_match(self):
+        home = self.home("Maple", "Unit 3", postal="M4M 1A1")
+        self.assertEqual(match_property(self.user, "3-12 MAPLE ST", ("M4M1A1",)), (home, "postal code"))
+
+    def test_street_wins_over_a_mailing_postal_code(self):
+        grassi = self.home("De Grassi", "52 De Grassi St", postal="K1A 0A1")
+        self.home("Maple", "12 Maple St", postal="M4M 1A1")
+        self.assertEqual(match_property(self.user, "52 DE GRASSI ST", ("M4M1A1",)), (grassi, "street"))
+
+    def test_nothing_clear(self):
+        self.home("A", "7 Elm Way", postal="M4M 1A1")
+        self.home("B", "7 Elm Way", postal="M4M 1A1")
+        self.assertEqual(match_property(self.user, "7 ELM WAY", ("M4M1A1",)), (None, None))
+
+    def test_import_says_how_the_property_was_found(self):
+        self.home("Maple", "Unit 3", postal="M4M 1A1")
+        with mock.patch(EXTRACT, return_value=fixture("toronto_hydro_autopay.txt")):
+            result = import_bills(self.user, [(pdf("jul.pdf"), "jul.pdf")])[0]
+        self.assertEqual(result.outcome, "created")
+        self.assertIn("matched by postal code", result.message)
+
+    def test_error_lists_your_properties(self):
+        self.home("Cottage", "1 Lake Rd", postal="K7L 1A1")
+        with mock.patch(EXTRACT, return_value=fixture("toronto_hydro_autopay.txt")):
+            result = import_bills(self.user, [(pdf("jul.pdf"), "jul.pdf")])[0]
+        self.assertEqual(result.outcome, "error")
+        self.assertIn("Cottage (1 Lake Rd, K7L 1A1)", result.message)

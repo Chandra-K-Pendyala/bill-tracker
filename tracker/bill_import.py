@@ -8,6 +8,7 @@ Each bill becomes one BillPayment for the month of its statement date, with the 
 says what happened to earlier ones (payments received, nothing carried forward, an automatic withdrawal),
 so importing it updates the earlier records. Several bills imported together are applied oldest first.
 """
+import difflib
 import re
 import subprocess
 import tempfile
@@ -65,6 +66,7 @@ class ParsedBill:
     autopay_date: date | None = None    # the provider withdraws the amount on this date
     needs_review: bool = False          # read by the general reader
     provider_detected: bool = False     # the company name was read off the bill, not from the known list
+    postal_codes: tuple = ()            # every postal code printed on the bill, a fallback for finding the property
     note: str = ""
 
     @property
@@ -391,9 +393,11 @@ def parse_bill(text, fallback=None):
     else:
         raise BillImportError("The company's name couldn't be found on this bill. Choose the provider under “Read "
                               "unrecognized bills as” and upload it again, or add the bill by hand.")
-    try: return parser(text)
+    try: bill = parser(text)
     except (ValueError, KeyError, InvalidOperation) as exc:
         raise BillImportError("A date or amount on this bill couldn't be read.") from exc
+    bill.postal_codes = tuple(dict.fromkeys(_postal(code) for code in re.findall(POSTAL_CODE, text)))
+    return bill
 
 def extract_text(f):
     """Return the text layer of a PDF (an uploaded or opened Django File) using poppler's pdftotext."""
@@ -425,10 +429,34 @@ def street_key(address):
         if words: return token, "".join(words)
     return None
 
-def match_property(user, address):
-    key = street_key(address)
-    matches = [p for p in Property.objects.filter(owner=user) if key and street_key(p.street_address) == key]
-    return matches[0] if len(matches) == 1 else None
+POSTAL_CODE = r"\b[A-Za-z]\d[A-Za-z] ?\d[A-Za-z]\d\b"
+
+def _postal(value): return re.sub(r"\s", "", value.upper())
+
+def _similar_street(a, b):
+    """'LAKESHORE' and 'LAKESHOREWAY' or 'LAKSHORE': the same street typed a little differently."""
+    if min(len(a), len(b)) >= 4 and (a.startswith(b) or b.startswith(a)): return True
+    return min(len(a), len(b)) >= 5 and difflib.SequenceMatcher(None, a, b).ratio() >= 0.85
+
+def match_property(user, address, postal_codes=()):
+    """(property, how) for a bill's service address, or (None, None) when nothing is clear.
+
+    In order: street number and name; the unit number when several properties share a street; a street name
+    typed a little differently (same street number); a postal code printed on the bill that only one property has."""
+    props = list(Property.objects.filter(owner=user))
+    if key := street_key(address):
+        same = [p for p in props if street_key(p.street_address) == key]
+        if len(same) == 1: return same[0], "street"
+        units = set(re.findall(r"\d+", address)) - {key[0]}
+        by_unit = [p for p in same if units & (set(re.findall(r"\d+", p.street_address)) - {key[0]})]
+        if len(by_unit) == 1: return by_unit[0], "unit"
+        if not same:
+            near = [p for p in props if (other := street_key(p.street_address)) and other[0] == key[0] and _similar_street(other[1], key[1])]
+            if len(near) == 1: return near[0], "similar street name"
+    codes = {_postal(code) for code in postal_codes}
+    by_code = [p for p in props if p.postal_code and _postal(p.postal_code) in codes]
+    if len(by_code) == 1: return by_code[0], "postal code"
+    return None, None
 
 def _digits(value): return re.sub(r"\D", "", value)
 
@@ -440,25 +468,27 @@ def _provider_for(user, bill):
     return Provider.objects.create(owner=user, name=bill.provider, category=bill.category, province_region="ON"), True
 
 def _account_for(user, bill, property):
-    """(account, new account, new provider). A company read off the bill is matched by account number first, so
-    later bills still find the account after its provider is renamed."""
+    """(account, new account, new provider, how its property was found). A company read off the bill is matched by
+    account number first, so later bills still find the account after its provider is renamed."""
     if bill.provider_detected:
         for account in BillAccount.objects.filter(owner=user).select_related("provider"):
-            if _digits(account.account_number) == _digits(bill.account_number): return account, False, False
+            if _digits(account.account_number) == _digits(bill.account_number): return account, False, False, ""
     provider, new_provider = _provider_for(user, bill)
     for account in BillAccount.objects.filter(owner=user, provider=provider):
-        if _digits(account.account_number) == _digits(bill.account_number): return account, False, new_provider
-    prop = match_property(user, bill.service_address) or property  # the chosen property is only a fallback
+        if _digits(account.account_number) == _digits(bill.account_number): return account, False, new_provider, ""
+    prop, how = match_property(user, bill.service_address, bill.postal_codes)
+    if prop is None and property is not None: prop, how = property, "chosen on the upload page"  # only a fallback
     if prop is None:
+        yours = "; ".join(f"{p.name} ({p.street_address}, {p.postal_code})" for p in Property.objects.filter(owner=user)) or "none yet"
         raise BillImportError(f"{bill.provider} account {bill.account_number} isn't in the tracker yet, and its service address "
-                              f"({bill.service_address or 'not found on the bill'}) doesn't match exactly one of your properties. "
-                              f"Add the property, or choose it when you upload.")
+                              f"({bill.service_address or 'not found on the bill'}) doesn't match one of your properties: {yours}. "
+                              f"Fix the property's address, or choose the property when you upload.")
     account = BillAccount(owner=user, provider=provider, property=prop, account_number=bill.account_number,
                           billing_frequency=bill.frequency, typical_amount=bill.amount_due, due_day=bill.due_date.day)
     try: account.full_clean()
     except ValidationError as exc: raise BillImportError(f"The new {bill.provider} account couldn't be saved: {exc.messages[0]}") from exc
     account.save()
-    return account, True, new_provider
+    return account, True, new_provider, how
 
 PAYMENT_FIELDS = ["amount_paid", "payment_date", "payment_method", "updated_at"]
 
@@ -516,7 +546,7 @@ def _schedule_autopay(account, payment, bill):
     return scheduled
 
 def _import_one(user, bill, f, filename, property):
-    account, new_account, new_provider = _account_for(user, bill, property)
+    account, new_account, new_provider, matched_by = _account_for(user, bill, property)
     label = f"{account.provider.name} · {bill.statement_date:%b %Y}"
     year, month = bill.statement_date.year, bill.statement_date.month
     if duplicate := account.payments.filter(statement_date=bill.statement_date).first():
@@ -538,7 +568,8 @@ def _import_one(user, bill, f, filename, property):
     scheduled = _schedule_autopay(account, payment, bill) if bill.autopay_date else []
     message = f"{label}: {_money_label(bill.amount_due)} due {_date_label(bill.due_date)}"
     if new_provider: message += f" (new provider, read from the bill)"
-    if new_account: message += f" (new account at {account.property})"
+    if new_account:
+        message += f" (new account at {account.property}" + ("" if matched_by in ("street", "unit") else f", matched by {matched_by}") + ")"
     if outcome == "updated": message += " (filled in the existing record)"
     if covered: message += ", covered by a credit on the account"
     if bill.autopay_date: message += f", withdrawn automatically on {_date_label(bill.autopay_date)}"

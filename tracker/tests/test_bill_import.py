@@ -228,7 +228,7 @@ class ImportBillsTests(TestCase):
         with mock.patch(EXTRACT, side_effect=texts({"jul.pdf": fixture("hydro_one.txt")})):
             results = import_bills(self.other, [(pdf("jul.pdf"), "jul.pdf")])
         self.assertEqual(results[0].outcome, "error")
-        self.assertIn("doesn't match exactly one of your properties", results[0].message)
+        self.assertIn("doesn't match one of your properties", results[0].message)
         self.assertFalse(BillAccount.objects.filter(owner=self.other).exists())
 
     def test_explicit_property_is_used_for_new_accounts(self):

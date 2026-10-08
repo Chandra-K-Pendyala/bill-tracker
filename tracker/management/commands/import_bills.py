@@ -41,7 +41,7 @@ class Command(BaseCommand):
             try: bill = parse_bill(extract_text(f))
             except BillImportError as exc:
                 self.stdout.write(self.style.ERROR(f"{name}: {exc}")); continue
-            prop = match_property(user, bill.service_address)
+            prop = match_property(user, bill.service_address, bill.postal_codes)[0]
             paid = ", ".join(f"${amount} on {day}" for day, amount in bill.payments) or "none listed"
             self.stdout.write(f"{name}: {bill.label} · account {bill.account_number} · {bill.service_address} → {prop or 'no matching property'}\n"
                               f"    statement {bill.statement_date} · due {bill.due_date} · ${bill.amount_due} · period {bill.period_start}–{bill.period_end}"

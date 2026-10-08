@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.1 — 2026-10-08
+
+### Fixed
+- Bills now find their property even when the property's address was typed differently from the bill. After the street number and name, the tracker tries the unit or suite number (when several properties share a street), a street name typed a little differently with the same street number, and finally a postal code printed on the bill that only one property has.
+- When a property is found by a similar street name or by postal code, the import message says so.
+- When no property matches, the error lists your properties and their addresses, so the difference is easy to see.
+- Tested on real bills with a home's address typed eight different ways (unit first, no space in the street name, a typo, the unit typed as the street number, no street number at all): every bill went to the right property each time.
+
 ## 1.4.0 — 2026-10-08
 
 ### Added
