@@ -118,7 +118,7 @@ class ParseBillTests(SimpleTestCase):
     def test_street_key(self):
         self.assertEqual(street_key("52 De Grassi St, Unit 1"), ("52", "DEGRASSI"))
         self.assertEqual(street_key("UNIT 1-52 DE GRASSI ST"), ("52", "DEGRASSI"))
-        self.assertEqual(street_key("7 ELM WAY UNIT 16 TORONTO ON M4M 1A1"), ("7", "ELM"))
+        self.assertEqual(street_key("7 ELM WAY UNIT 4 TORONTO ON M4M 1A1"), ("7", "ELM"))
         self.assertEqual(street_key("123 1st Ave"), ("123", "1ST"))
         self.assertIsNone(street_key("no number here"))
 

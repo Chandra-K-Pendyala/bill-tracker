@@ -1,0 +1,14 @@
+   Hydro Ottawa                                                         hydroottawa.com
+
+   Account Number              Statement Date              Due Date
+   3311 2244 55                Aug 20, 2026                Sep 10, 2026
+
+   JANE SAMPLE
+   Service Location: 3-12 MAPLE ST, OTTAWA
+
+   Previous Balance                                                       $72.10
+   Payment Received - Thank You                                           $72.10 CR
+   Balance Forward                                                         $0.00
+   Current Charges                                                        $87.65
+
+   Amount Due                                                             $87.65

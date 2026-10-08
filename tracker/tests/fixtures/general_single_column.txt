@@ -1,0 +1,20 @@
+                                                                                  Page 1 of 2
+   Alectra Utilities                                        www.alectrautilities.com
+   JANE SAMPLE
+   12 MAPLE ST
+   HAMILTON ON L8P 1A1
+
+   Account Number: 7712 3456 01                             Bill Date: Aug 15, 2026
+   Service Address: 12 MAPLE ST, HAMILTON                   Due Date: September 5, 2026
+   Billing Period: Jul 10, 2026 to Aug 9, 2026
+
+   Your Electricity Charges
+   Electricity                                                               $61.20
+   Delivery                                                                  $40.11
+   Regulatory Charges                                                         $5.02
+   HST                                                                       $13.81
+   Ontario Electricity Rebate                                               -$15.38
+
+   Total Amount Due                                                         $104.76
+
+   Interest of 1.5% per month (19.56% per year) is charged on overdue amounts.

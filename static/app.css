@@ -18,3 +18,5 @@
 @media(max-width:650px){.bar-row{grid-template-columns:1fr auto}.bar{grid-column:1/-1;grid-row:2}.empty-card{flex-direction:column;align-items:flex-start}.mini-item{flex-wrap:wrap;padding-bottom:8px}}
 /* Keep action cells as real table cells so row borders line up */
 td.row-actions{display:table-cell;text-align:right;white-space:nowrap}td.row-actions>*{display:inline-block;margin-left:10px;vertical-align:middle}td.row-actions>:first-child{margin-left:0}
+/* Bills read by the general reader, and withdrawals still ahead */
+.badge.review{background:#fff0dd;color:#945613}.status.scheduled{background:#e8edf7;color:#425783}

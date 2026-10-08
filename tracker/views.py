@@ -33,6 +33,7 @@ def _payment_filters(request, qs):
     elif status in ("unpaid", "partially_paid"): qs = qs.filter(status=status, due_date__gte=today)
     if params.get("province"): qs = qs.filter(bill_account__province__iexact=params["province"].strip())
     if params.get("address"): qs = qs.filter(bill_account__service_address__icontains=params["address"])
+    if params.get("review") == "1": qs = qs.filter(needs_review=True)
     return qs
 
 def _filter_options(user):
@@ -90,6 +91,7 @@ def dashboard(request):
         "upcoming": open_bills.filter(due_date__gte=today, due_date__lte=today + timedelta(days=30)).order_by("due_date")[:8],
         "overdue": open_bills.filter(due_date__lt=today).order_by("due_date")[:8],
         "active_accounts": BillAccount.objects.filter(owner=request.user, active=True).count(),
+        "review_count": payments.filter(needs_review=True).count(),
         "paid_count": month.filter(status="paid").count(), "unpaid_count": month.exclude(status="paid").count(),
         "monthly_data": [{"label": MONTHS[m - 1][1][:3], "value": float(billed.get(m, 0))} for m in chart_months],
         "properties": _property_summaries(request.user, today), **_breakdowns(year),
@@ -203,19 +205,28 @@ def payment_form(request, pk=None):
 @login_required
 @require_POST
 def payment_mark_paid(request, pk):
+    """Mark a bill paid. A bill's total includes any balance carried from earlier bills of the same account, so
+    those are marked paid too."""
     payment = get_object_or_404(BillPayment.objects.select_related("bill_account__provider"), pk=pk, owner=request.user)
-    if payment.amount_paid < payment.amount_due:
-        payment.amount_paid = payment.amount_due
-        payment.payment_date = payment.payment_date or timezone.localdate()
-        payment.save(update_fields=["amount_paid", "payment_date", "updated_at"])
-        messages.success(request, f"Marked {payment.bill_account.provider.name} · {payment.period_label} as paid.")
+    today = timezone.localdate()
+    earlier = (BillPayment.objects.filter(bill_account=payment.bill_account, amount_paid__lt=F("amount_due"))
+               .filter(Q(billing_year__lt=payment.billing_year) | Q(billing_year=payment.billing_year, billing_month__lt=payment.billing_month)))
+    marked = [p for p in [payment, *earlier] if p.amount_paid < p.amount_due]
+    for p in marked:
+        p.amount_paid = p.amount_due
+        p.payment_date = p.payment_date or today
+        p.save(update_fields=["amount_paid", "payment_date", "updated_at"])
+    if marked:
+        extra = f", and {len(marked) - 1} earlier bill{'s' if len(marked) > 2 else ''} carried into it" if len(marked) > 1 else ""
+        messages.success(request, f"Marked {payment.bill_account.provider.name} · {payment.period_label} as paid{extra}.")
     return redirect(_next_url(request, "payment_list"))
 
 @login_required
 def bill_import(request):
     form = BillImportForm(request.POST or None, request.FILES or None, user=request.user)
     if request.method == "POST" and form.is_valid():
-        results = import_bills(request.user, [(f, f.name) for f in form.cleaned_data["files"]], property=form.cleaned_data["property"])
+        results = import_bills(request.user, [(f, f.name) for f in form.cleaned_data["files"]],
+                               property=form.cleaned_data["property"], provider=form.cleaned_data["provider"])
         levels = {"created": messages.SUCCESS, "updated": messages.SUCCESS, "duplicate": messages.INFO, "error": messages.ERROR}
         for result in results: messages.add_message(request, levels[result.outcome], result.message)
         imported = [r.payment for r in results if r.outcome in ("created", "updated")]

@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.3.0 — 2026-10-08
+
+### Added
+- Bill readers for Toronto Hydro and Wyse Meter Solutions (sub-metered water), built from real bills.
+- A general reader for other major Ontario providers listed in `tracker/providers.py`: electricity distributors such as Alectra, Hydro Ottawa, Elexicon, London Hydro and Enova Power; city water bills; Bell, Rogers, Telus and other phone and internet companies; and Enercare and Reliance rentals. It finds the amount due, the bill date, the due date, the account number and the service address.
+- Bills read by the general reader are flagged "Check" until you open and save them. On 27 real bills from five providers, it read every one of those fields correctly.
+- "Read unrecognized bills as" on the import page: choose the provider for bills the tracker doesn't recognize, and the general reader reads them.
+- A dashboard notice and a payment-list filter for bills that still need a check.
+- Automatic withdrawals: when a bill says the provider will withdraw the payment (Toronto Hydro does), the bill is recorded as paid on that date and shows "Auto-pay scheduled" until then. The account is marked auto-pay.
+- Usage in gallons, for Wyse water bills.
+
+### Changed
+- Each payment listed on a bill now goes to the earlier bill with exactly that amount, with its own date. A date assumed from an automatic withdrawal is corrected when the next bill shows the real one.
+- A bill fully covered by a credit on the account is recorded as paid.
+- When an earlier balance or a credit changes what a bill asks for, the record's notes say so.
+- Mark paid also marks earlier unpaid bills of the same account paid, because a bill's total includes balances carried from earlier bills.
+- The built-in provider list adds the major Ontario providers.
+
 ## 1.2.0 — 2026-10-07
 
 ### Added

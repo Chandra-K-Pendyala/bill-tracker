@@ -46,7 +46,7 @@ The app listens on this computer only (127.0.0.1). To use it from another device
 ## Using the app
 
 1. **Properties:** add each home and mark it owned or rented.
-2. **Import bills:** **Payments → Import bills**. Choose one or more PDFs. Supported: Hydro One, Enbridge Gas, Municipality of North Grenville water. Choosing a property is only needed when a bill's account is new and its street address doesn't match a property.
+2. **Import bills:** **Payments → Import bills**. Choose one or more PDFs (see [Supported bills](#supported-bills)). Choosing a property is only needed when a bill's account is new and its street address doesn't match a property.
 3. **Accounts:** created by an import, or added by hand. Open an account to see its history and charts.
 4. **Payments:** one record per account and billing month. Use **Mark paid** when you pay a bill. Bills the import doesn't support can be added by hand, with an optional PDF or image up to 10 MB.
 5. **Dashboard and reminders:** open balance, bills due in the next 30 days, overdue bills, and totals by property, category and provider.
@@ -55,9 +55,21 @@ The app listens on this computer only (127.0.0.1). To use it from another device
 How the import fills in records:
 
 - Each bill becomes the record for the month of its statement date. The amount is that bill's own charges; a balance carried forward stays on the earlier bill.
-- Bills list the payments received since the previous bill, so importing a new bill marks the previous one paid, with the payment date when the bill prints one. North Grenville water bills don't print payment dates, so those show as paid with no date.
+- Bills list the payments received since the previous bill. Each payment marks the earlier bill with exactly that amount paid, on its own date. North Grenville and Wyse bills don't print payment dates, so those show as paid with no date.
+- When a bill says the provider will withdraw the payment (Toronto Hydro does), the bill is recorded as paid on that date and shows "Auto-pay scheduled" until then. A bill fully covered by a credit is recorded as paid.
+- **Mark paid** also marks earlier unpaid bills of the same account paid, because a bill's total includes balances carried from earlier bills.
 - A bill that's already recorded is skipped, so importing the same file twice is safe. Within one upload, bills are applied oldest first.
 - Payment status comes from the amounts (paid, partially paid, unpaid). A bill that isn't paid by its due date shows as overdue.
+
+## Supported bills
+
+The tracker reads the text of bill PDFs; scanned bills without text can't be read.
+
+- **Read exactly:** Hydro One, Toronto Hydro, Enbridge Gas, Wyse Meter Solutions and Municipality of North Grenville water.
+- **Read generally:** about 55 other major Ontario providers listed in `tracker/providers.py`, such as Alectra, Hydro Ottawa, Elexicon, London Hydro, Enova Power, city water bills, Bell, Rogers and Telus. These bills are flagged "Check" until you open and save them.
+- **Anything else:** choose the provider under "Read unrecognized bills as" when you upload, or add the bill by hand.
+
+A sample bill from a provider is all that's needed to give it its own reader.
 
 ## Importing a folder of bills
 

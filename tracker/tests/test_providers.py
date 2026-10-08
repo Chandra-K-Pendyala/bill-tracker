@@ -1,0 +1,293 @@
+import shutil
+import tempfile
+from datetime import date, timedelta
+from decimal import Decimal
+from pathlib import Path
+from unittest import mock
+from django.contrib.auth.models import User
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import SimpleTestCase, TestCase, override_settings
+from django.urls import reverse
+from django.utils import timezone
+from tracker.bill_import import BillImportError, import_bills, parse_bill, recognize_provider
+from tracker.models import BillAccount, BillPayment, Property, Provider
+
+FIXTURES = Path(__file__).parent / "fixtures"
+MEDIA_ROOT = tempfile.mkdtemp()
+def tearDownModule(): shutil.rmtree(MEDIA_ROOT, ignore_errors=True)
+def fixture(name): return (FIXTURES / name).read_text()
+def pdf(name): return SimpleUploadedFile(name, b"%PDF-1.4 test", content_type="application/pdf")
+def texts(mapping): return lambda f: mapping[f.name]
+EXTRACT = "tracker.bill_import.extract_text"
+
+class ReaderTests(SimpleTestCase):
+    def test_toronto_hydro_autopay(self):
+        bill = parse_bill(fixture("toronto_hydro_autopay.txt"))
+        self.assertEqual(bill.provider, "Toronto Hydro")
+        self.assertEqual(bill.category, "electricity")
+        self.assertEqual(bill.account_number, "5500000001")
+        self.assertEqual(bill.service_address, "12 MAPLE ST (E) SUITE 3, TORONTO")
+        self.assertEqual(bill.statement_date, date(2026, 7, 10))
+        self.assertEqual(bill.due_date, date(2026, 8, 3))
+        self.assertEqual(bill.amount_due, Decimal("164.98"))
+        self.assertEqual(bill.amount_to_pay, Decimal("210.47"))
+        self.assertEqual(bill.carried, Decimal("45.49"))
+        self.assertEqual(bill.period_start, date(2026, 6, 1))
+        self.assertEqual(bill.period_end, date(2026, 7, 3))
+        self.assertEqual(bill.usage, Decimal("904.961"))
+        self.assertEqual(bill.usage_unit, "kWh")
+        self.assertEqual(bill.payments, [])
+        self.assertFalse(bill.previous_settled)
+        self.assertEqual(bill.autopay_date, date(2026, 8, 3))
+        self.assertFalse(bill.needs_review)
+
+    def test_toronto_hydro_payments(self):
+        bill = parse_bill(fixture("toronto_hydro_payments.txt"))
+        self.assertEqual(bill.statement_date, date(2026, 8, 10))
+        self.assertEqual(bill.due_date, date(2026, 9, 3))
+        self.assertEqual(bill.amount_due, Decimal("164.92"))
+        self.assertEqual(bill.carried, Decimal("0.00"))
+        self.assertTrue(bill.previous_settled)
+        self.assertEqual(bill.autopay_date, date(2026, 9, 3))
+        self.assertEqual(bill.payments, [(date(2026, 7, 15), Decimal("45.49")), (date(2026, 7, 31), Decimal("164.98"))])
+
+    def test_wyse_credit(self):
+        bill = parse_bill(fixture("wyse_credit.txt"))
+        self.assertEqual(bill.provider, "Wyse Meter Solutions")
+        self.assertEqual(bill.category, "water")
+        self.assertEqual(bill.account_number, "36000000-01")
+        self.assertEqual(bill.service_address, "3-12 Maple St")
+        self.assertEqual(bill.statement_date, date(2026, 6, 18))
+        self.assertEqual(bill.due_date, date(2026, 7, 13))
+        self.assertEqual(bill.amount_due, Decimal("114.01"))
+        self.assertEqual(bill.amount_to_pay, Decimal("0.00"))
+        self.assertEqual(bill.carried, Decimal("-142.27"))
+        self.assertEqual(bill.usage, Decimal("2611.00"))
+        self.assertEqual(bill.usage_unit, "gal")
+        self.assertEqual(bill.period_start, date(2026, 5, 1))
+        self.assertEqual(bill.period_end, date(2026, 6, 1))
+        self.assertTrue(bill.previous_settled)
+
+    def test_wyse_arrears(self):
+        bill = parse_bill(fixture("wyse_arrears.txt"))
+        self.assertEqual(bill.statement_date, date(2026, 8, 19))
+        self.assertEqual(bill.due_date, date(2026, 9, 14))
+        self.assertEqual(bill.amount_due, Decimal("114.55"))
+        self.assertEqual(bill.amount_to_pay, Decimal("150.04"))
+        self.assertEqual(bill.carried, Decimal("38.66"))
+        self.assertFalse(bill.previous_settled)
+        self.assertIn("$38.66 carried", bill.note)
+
+    def test_general_reader_single_column(self):
+        bill = parse_bill(fixture("general_single_column.txt"))
+        self.assertEqual(bill.provider, "Alectra Utilities")
+        self.assertEqual(bill.category, "electricity")
+        self.assertEqual(bill.account_number, "7712 3456 01")
+        self.assertEqual(bill.service_address, "12 MAPLE ST, HAMILTON")
+        self.assertEqual(bill.statement_date, date(2026, 8, 15))
+        self.assertEqual(bill.due_date, date(2026, 9, 5))
+        self.assertEqual(bill.amount_due, Decimal("104.76"))
+        self.assertEqual(bill.period_start, date(2026, 7, 10))
+        self.assertEqual(bill.period_end, date(2026, 8, 9))
+        self.assertTrue(bill.needs_review)
+
+    def test_general_reader_reads_columns(self):
+        bill = parse_bill(fixture("general_columns.txt"))
+        self.assertEqual(bill.provider, "Hydro Ottawa")
+        self.assertEqual(bill.account_number, "3311 2244 55")
+        self.assertEqual(bill.statement_date, date(2026, 8, 20))
+        self.assertEqual(bill.due_date, date(2026, 9, 10))
+        self.assertEqual(bill.amount_due, Decimal("87.65"))
+        self.assertTrue(bill.needs_review)
+
+    def test_unrecognized_provider_needs_a_fallback(self):
+        text = fixture("general_unknown_provider.txt")
+        with self.assertRaises(BillImportError):
+            parse_bill(text)
+        bill = parse_bill(text, ("Lakeview Propane Co-op", "other"))
+        self.assertEqual(bill.provider, "Lakeview Propane Co-op")
+        self.assertEqual(bill.category, "other")
+        self.assertEqual(bill.account_number, "LP-204871")
+        self.assertEqual(bill.statement_date, date(2026, 9, 1))
+        self.assertEqual(bill.due_date, date(2026, 9, 21))
+        self.assertEqual(bill.amount_due, Decimal("240.01"))
+        self.assertTrue(bill.needs_review)
+
+    def test_recognize_provider(self):
+        self.assertEqual(recognize_provider("Your bill from Elexicon Energy Inc."), ("Elexicon Energy", "electricity"))
+        self.assertEqual(recognize_provider("Pay at rogers.com/billing"), ("Rogers", "internet"))
+        self.assertEqual(recognize_provider("CITY OF TORONTO Utility Bill"), ("City of Toronto", "water"))
+        self.assertIsNone(recognize_provider("Nothing to see here"))
+
+@override_settings(MEDIA_ROOT=MEDIA_ROOT)
+class ImportTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user("alice", password="x-safe-pass-123")
+        cls.home = Property.objects.create(owner=cls.user, name="Maple", ownership="rented", street_address="12 Maple St, Suite 3", city="Toronto", province="ON", postal_code="M4M 1A1")
+        cls.th = Provider.objects.create(name="Toronto Hydro", category="electricity", is_default=True, is_custom=False)
+        cls.wyse = Provider.objects.create(name="Wyse Meter Solutions", category="water", is_default=True, is_custom=False)
+
+    def account(self, provider, number):
+        return BillAccount.objects.create(owner=self.user, provider=provider, property=self.home, account_number=number, service_address="12 Maple St", city="Toronto", province="ON", postal_code="M4M 1A1", due_day=3)
+
+    def bill(self, account, month, amount):
+        return BillPayment.objects.create(owner=self.user, bill_account=account, billing_month=month, billing_year=2026, amount_due=Decimal(amount), due_date=date(2026, month, 28))
+
+    def run_import(self, *names, provider=None):
+        with mock.patch(EXTRACT, side_effect=texts({n: fixture(n) for n in names})):
+            return import_bills(self.user, [(pdf(n), n) for n in names], provider=provider)
+
+    def test_autopay_schedules_the_bill_and_the_carried_balance(self):
+        account = self.account(self.th, "5500000001")
+        june = self.bill(account, 6, "45.49")
+        results = self.run_import("toronto_hydro_autopay.txt")
+        self.assertEqual(results[0].outcome, "created")
+        july = results[0].payment
+        july.refresh_from_db()
+        self.assertEqual(july.amount_paid, Decimal("164.98"))
+        self.assertEqual(july.payment_date, date(2026, 8, 3))
+        self.assertEqual(july.payment_method, "auto_pay")
+        self.assertEqual(july.status, "paid")
+        june.refresh_from_db()
+        self.assertEqual(june.amount_paid, Decimal("45.49"))
+        self.assertEqual(june.payment_date, date(2026, 8, 3))
+        self.assertEqual(june.payment_method, "auto_pay")
+        account.refresh_from_db()
+        self.assertTrue(account.auto_pay)
+
+    def test_payments_on_the_next_bill_correct_the_dates(self):
+        account = self.account(self.th, "5500000001")
+        june = self.bill(account, 6, "45.49")
+        self.run_import("toronto_hydro_autopay.txt")
+        self.run_import("toronto_hydro_payments.txt")
+        june.refresh_from_db()
+        self.assertEqual(june.payment_date, date(2026, 7, 15))
+        self.assertEqual(june.payment_method, "")
+        july = BillPayment.objects.get(bill_account=account, billing_month=7)
+        self.assertEqual(july.payment_date, date(2026, 7, 31))
+        self.assertEqual(july.payment_method, "")
+        august = BillPayment.objects.get(bill_account=account, billing_month=8)
+        self.assertEqual(august.payment_date, date(2026, 9, 3))
+        self.assertEqual(august.payment_method, "auto_pay")
+        self.assertEqual(august.amount_paid, Decimal("164.92"))
+
+    def test_credit_covers_the_bill_and_settles_earlier_ones(self):
+        account = self.account(self.wyse, "36000000-01")
+        may = self.bill(account, 5, "100.00")
+        self.run_import("wyse_credit.txt")
+        june = BillPayment.objects.get(bill_account=account, billing_month=6)
+        june.refresh_from_db()
+        self.assertEqual(june.amount_paid, Decimal("114.01"))
+        self.assertEqual(june.status, "paid")
+        self.assertIsNone(june.payment_date)
+        may.refresh_from_db()
+        self.assertEqual(may.status, "paid")
+        self.assertIn("credit of $142.27", june.notes)
+
+    def test_arrears_leave_the_earlier_bill_unpaid(self):
+        account = self.account(self.wyse, "36000000-01")
+        july = self.bill(account, 7, "98.40")
+        self.run_import("wyse_arrears.txt")
+        august = BillPayment.objects.get(bill_account=account, billing_month=8)
+        august.refresh_from_db()
+        self.assertEqual(august.amount_due, Decimal("114.55"))
+        self.assertEqual(august.amount_paid, Decimal("0"))
+        self.assertEqual(august.status, "unpaid")
+        july.refresh_from_db()
+        self.assertEqual(july.status, "unpaid")
+
+    def test_general_reader_flags_the_bill(self):
+        results = self.run_import("general_single_column.txt")
+        self.assertEqual(results[0].outcome, "created")
+        payment = results[0].payment
+        self.assertTrue(payment.needs_review)
+        self.assertEqual(payment.amount_due, Decimal("104.76"))
+        self.assertEqual(payment.bill_account.provider.name, "Alectra Utilities")
+        self.assertIn("check it", results[0].message)
+
+    def test_fallback_provider_for_unrecognized_bills(self):
+        results = self.run_import("general_unknown_provider.txt")
+        self.assertEqual(results[0].outcome, "error")
+        other = Provider.objects.create(owner=self.user, name="Lakeview Propane Co-op", category="other")
+        results = self.run_import("general_unknown_provider.txt", provider=other)
+        self.assertEqual(results[0].outcome, "created")
+        self.assertEqual(results[0].payment.bill_account.provider, other)
+        self.assertTrue(results[0].payment.needs_review)
+
+@override_settings(MEDIA_ROOT=MEDIA_ROOT)
+class ViewTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user("alice", password="x-safe-pass-123")
+        cls.home = Property.objects.create(owner=cls.user, name="Maple", ownership="rented", street_address="12 Maple St", city="Toronto", province="ON", postal_code="M4M 1A1")
+        cls.provider = Provider.objects.create(name="Wyse Meter Solutions", category="water", is_default=True, is_custom=False)
+        cls.account = BillAccount.objects.create(owner=cls.user, provider=cls.provider, property=cls.home, account_number="36000000-01", service_address="12 Maple St", city="Toronto", province="ON", postal_code="M4M 1A1")
+        cls.other_account = BillAccount.objects.create(owner=cls.user, provider=cls.provider, property=cls.home, account_number="99999999-01", service_address="12 Maple St", city="Toronto", province="ON", postal_code="M4M 1A1")
+
+    def bill(self, account, month, amount, **extra):
+        return BillPayment.objects.create(owner=self.user, bill_account=account, billing_month=month, billing_year=2026, amount_due=Decimal(amount), due_date=date(2026, month, 14), **extra)
+
+    def setUp(self):
+        self.client.force_login(self.user)
+
+    def test_mark_paid_settles_earlier_bills_of_the_same_account(self):
+        july = self.bill(self.account, 7, "98.40")
+        august = self.bill(self.account, 8, "99.60")
+        elsewhere = self.bill(self.other_account, 7, "50.00")
+        self.client.post(reverse("payment_mark_paid", args=[august.pk]))
+        july.refresh_from_db()
+        august.refresh_from_db()
+        elsewhere.refresh_from_db()
+        self.assertEqual(august.status, "paid")
+        self.assertEqual(july.status, "paid")
+        self.assertEqual(elsewhere.status, "unpaid")
+
+    def test_mark_paid_leaves_later_bills_alone(self):
+        july = self.bill(self.account, 7, "98.40")
+        august = self.bill(self.account, 8, "99.60")
+        self.client.post(reverse("payment_mark_paid", args=[july.pk]))
+        july.refresh_from_db()
+        august.refresh_from_db()
+        self.assertEqual(july.status, "paid")
+        self.assertEqual(august.status, "unpaid")
+
+    def test_saving_a_flagged_bill_clears_the_flag(self):
+        payment = self.bill(self.account, 9, "80.00", needs_review=True)
+        self.client.post(reverse("payment_edit", args=[payment.pk]), data={
+            "bill_account": self.account.pk,
+            "billing_month": "9",
+            "billing_year": "2026",
+            "statement_date": "",
+            "amount_due": "80.00",
+            "due_date": "2026-09-14",
+            "amount_paid": "0",
+            "payment_date": "",
+            "payment_method": "",
+            "reference_number": "",
+            "period_start": "",
+            "period_end": "",
+            "usage": "",
+            "usage_unit": "",
+            "notes": ""
+        })
+        payment.refresh_from_db()
+        self.assertFalse(payment.needs_review)
+
+    def test_review_filter_and_dashboard_notice(self):
+        flagged = self.bill(self.account, 9, "80.00", needs_review=True)
+        self.bill(self.account, 8, "70.00")
+        response = self.client.get(reverse("payment_list"), {"review": "1"})
+        self.assertEqual(list(response.context["payments"]), [flagged])
+        response = self.client.get(reverse("dashboard"))
+        self.assertEqual(response.context["review_count"], 1)
+        self.assertContains(response, "needs a check")
+
+    def test_scheduled_withdrawal_status(self):
+        later = timezone.localdate() + timedelta(days=5)
+        payment = self.bill(self.account, 10, "60.00", amount_paid=Decimal("60.00"), payment_date=later, payment_method="auto_pay")
+        self.assertEqual(payment.effective_status, "scheduled")
+        self.assertEqual(payment.effective_status_label, "Auto-pay scheduled")
+        payment.payment_date = timezone.localdate() - timedelta(days=1)
+        payment.save()
+        self.assertEqual(payment.effective_status, "paid")

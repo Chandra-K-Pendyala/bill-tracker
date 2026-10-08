@@ -84,6 +84,7 @@ class BillPaymentForm(forms.ModelForm):
     def save(self, commit=True):
         obj = super().save(False)
         obj.owner = self.user
+        obj.needs_review = False  # saving the form means the bill was looked over
         if commit:
             obj.save()
             f = self.cleaned_data.get("attachment")
@@ -103,12 +104,16 @@ class MultipleFileField(forms.FileField):
 
 class BillImportForm(forms.Form):
     files = MultipleFileField(label="Bill PDFs", validators=[FileExtensionValidator(["pdf"])],
-                              help_text="Hydro One, Enbridge Gas and North Grenville water bills. Up to 24 files, 10 MB each.")
+                              help_text="Up to 24 files, 10 MB each.")
     property = forms.ModelChoiceField(queryset=Property.objects.none(), required=False, empty_label="Match by service address",
                                       help_text="Used for a new account only when its service address doesn't match one of your properties.")
+    provider = forms.ModelChoiceField(queryset=Provider.objects.none(), required=False, empty_label="Recognize automatically",
+                                      label="Read unrecognized bills as",
+                                      help_text="Only for bills whose provider isn't recognized. They're read generally and flagged for you to check.")
     def __init__(self, *args, user=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["property"].queryset = Property.objects.filter(owner=user)
+        self.fields["provider"].queryset = Provider.objects.filter(active=True).filter(Q(owner__isnull=True) | Q(owner=user)).order_by("name")
     def clean_files(self):
         files = self.cleaned_data["files"]
         if len(files) > MAX_BILL_FILES: raise forms.ValidationError(f"Upload at most {MAX_BILL_FILES} files at a time.")

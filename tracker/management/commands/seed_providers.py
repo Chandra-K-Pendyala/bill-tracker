@@ -1,5 +1,6 @@
 from django.core.management.base import BaseCommand
 from tracker.models import Provider
+from tracker.providers import ONTARIO_PROVIDERS
 
 PROVIDERS = [
  ("Toronto Hydro","electricity","ON"),("Hydro One","electricity","ON"),("Alectra Utilities","electricity","ON"),
@@ -19,7 +20,9 @@ class Command(BaseCommand):
     help = "Idempotently seed built-in Canadian service providers."
     def handle(self, *args, **kwargs):
         count=0
-        for name, category, region in PROVIDERS:
+        seeds = {name: (category, region) for name, category, region in PROVIDERS}
+        seeds.update({name: (category, region) for name, category, region, _ in ONTARIO_PROVIDERS})
+        for name, (category, region) in seeds.items():
             _, created = Provider.objects.update_or_create(owner=None, name=name, defaults={"category":category,"province_region":region,"is_default":True,"is_custom":False,"active":True})
             count += created
         self.stdout.write(self.style.SUCCESS(f"Provider seed complete ({count} created)."))

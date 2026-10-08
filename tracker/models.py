@@ -20,6 +20,7 @@ PROVINCES = [(x, x) for x in ["AB", "BC", "MB", "NB", "NL", "NS", "NT", "NU", "O
 MONTHS = [(m, timezone.datetime(2000, m, 1).strftime("%B")) for m in range(1, 13)]
 ADDRESS_FIELDS = {"service_address": "street_address", "city": "city", "province": "province", "postal_code": "postal_code"}
 STATUS_FILTERS = {"paid": "Paid", "unpaid": "Unpaid", "partially_paid": "Partially paid", "overdue": "Overdue"}
+STATUS_LABELS = {**STATUS_FILTERS, "scheduled": "Auto-pay scheduled"}  # scheduled: paid by a withdrawal still ahead
 
 class Provider(models.Model):
     owner = models.ForeignKey(User, null=True, blank=True, on_delete=models.CASCADE, related_name="providers")
@@ -96,7 +97,7 @@ class BillAccount(models.Model):
 class BillPayment(models.Model):
     STATUSES = [("unpaid", "Unpaid"), ("partially_paid", "Partially paid"), ("paid", "Paid")]
     METHODS = [(x, x.replace("_", " ").title()) for x in ["bank_transfer", "credit_card", "debit", "auto_pay", "cash", "cheque", "other"]]
-    USAGE_UNITS = [("kWh", "kWh"), ("m³", "m³")]
+    USAGE_UNITS = [("kWh", "kWh"), ("m³", "m³"), ("gal", "gal")]
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="payments")
     bill_account = models.ForeignKey(BillAccount, on_delete=models.CASCADE, related_name="payments")
     billing_month = models.PositiveSmallIntegerField()
@@ -114,6 +115,7 @@ class BillPayment(models.Model):
     reference_number = models.CharField(max_length=120, blank=True)
     usage = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True, help_text="Consumption shown on the bill.")
     usage_unit = models.CharField(max_length=10, choices=USAGE_UNITS, blank=True)
+    needs_review = models.BooleanField(default=False, editable=False, help_text="Read by the general bill reader and not checked yet.")
     notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -143,10 +145,12 @@ class BillPayment(models.Model):
     def balance(self): return max(self.amount_due - self.amount_paid, 0)
     @property
     def effective_status(self):
-        if self.status != "paid" and self.due_date < timezone.localdate(): return "overdue"
+        today = timezone.localdate()
+        if self.status != "paid" and self.due_date < today: return "overdue"
+        if self.status == "paid" and self.payment_date and self.payment_date > today: return "scheduled"
         return self.status
     @property
-    def effective_status_label(self): return STATUS_FILTERS[self.effective_status]
+    def effective_status_label(self): return STATUS_LABELS[self.effective_status]
     @property
     def period_label(self): return f"{MONTHS[self.billing_month - 1][1][:3]} {self.billing_year}"
     def __str__(self): return f"{self.bill_account} — {self.billing_year}-{self.billing_month:02d}"
