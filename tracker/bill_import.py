@@ -64,6 +64,7 @@ class ParsedBill:
     amount_to_pay: Decimal | None = None  # what the bill asks for, after earlier balances and credits
     autopay_date: date | None = None    # the provider withdraws the amount on this date
     needs_review: bool = False          # read by the general reader
+    provider_detected: bool = False     # the company name was read off the bill, not from the known list
     note: str = ""
 
     @property
@@ -257,7 +258,102 @@ def recognize_provider(text):
              if (m := re.search(pattern, text, re.I))]
     return min(found)[1:] if found else None
 
-def _parse_general(text, provider, category):
+# Reading the company's name off bills from providers that aren't in tracker/providers.py. Candidates come from
+# the payee line, government names, business-style names (ending in Inc., Utilities, Hydro, Co-op…) and are
+# confirmed by the bill's web address; the best-scoring one wins.
+ORG_ENDINGS = {"INC", "LTD", "LIMITED", "CORP", "CORPORATION", "LLC", "LLP", "CO-OP", "COOP", "COOPERATIVE", "COMPANY",
+               "UTILITIES", "UTILITY", "HYDRO", "ENERGY", "POWER", "GAS", "WATER", "ELECTRIC", "TELECOM", "COMMUNICATIONS",
+               "WIRELESS", "MOBILITY", "MOBILE", "NETWORKS", "SERVICES", "SOLUTIONS", "INSURANCE", "PROPANE", "FUELS",
+               "OIL", "METERING", "INTERNET", "CABLE", "TELEPHONE", "GROUP"}
+GENERIC_WORDS = {"YOUR", "OUR", "THE", "TOTAL", "NATURAL", "SUPPLY", "DELIVERY", "SERVICE", "CUSTOMER", "ACCOUNT", "BILL",
+                 "BILLING", "PAYMENT", "CHARGE", "CHARGES", "AMOUNT", "NEW", "CURRENT", "MONTHLY", "ONTARIO", "ELECTRICITY",
+                 "AND", "OF", "FOR", "MY", "PLEASE", "PAY", "INFORMATION", "USAGE", "RATE", "RATES", "HOME", "RESIDENTIAL"}
+NOT_THE_BILLER = re.compile(
+    r"ontario\s+energy\s+board|independent\s+electricity|\bieso\b|electricity\s+support\s+program|canada\s+revenue"
+    r"|canada\s+post|government\s+of|province\s+of|ontario\s+electricity\s+rebate|financial\s+institution|royal\s+bank"
+    r"|\brbc\b|td\s+canada|scotiabank|bank\s+of\s+montreal|\bbmo\b|\bcibc\b|tangerine|desjardins|interac|\bvisa\b"
+    r"|mastercard|american\s+express|paymentus|moneris", re.I)
+GOVERNMENT = (r"(?i:regional municipality|municipality|city|town|township|village|county|region) (?i:of) "
+              r"[A-Z][\w'.-]*(?: [A-Z][\w'.-]*){0,3}")  # the place name itself must be capitalized
+PAYEE = (r"(?:cheques?\s+(?:are\s+)?payable\s+to|payable\s+to|remit(?:\s+payments?)?\s+to|make\s+(?:your\s+)?payments?\s+to"
+         r"|pay\s+to\s+the\s+order\s+of)\s*:?\s*")
+NAME_RUN = r"[A-Z][\w&'.-]*(?: [A-Z&][\w&'.-]*){0,5}"  # capitalized words separated by single spaces
+WEB_DOMAIN = r"\b(?:www\.)?([a-z0-9-]{4,})\.(?:com|ca|net|org)\b"
+SMALL_WORDS = {"of", "and", "the", "de", "du", "la", "des"}
+CATEGORY_HINTS = [
+    ("electricity", r"\bkwh\b|electricity|\bhydro\b|\bpower\b"), ("natural_gas", r"natural\s+gas|gas\s+supply|\bgas\b"),
+    ("water", r"\bwater\b|sewer|wastewater"), ("mobile", r"wireless|\bmobile\b|mobility|cell\s*phone|data\s+plan"),
+    ("internet", r"internet|broadband|wi-?fi|modem|telecom"), ("tv", r"television|\bcable\b|\btv\b"),
+    ("insurance", r"insurance|premium|policy\s+(?:number|no|#)"), ("property_tax", r"property\s+tax|tax\s+levy|assessment\s+roll"),
+    ("condo_fees", r"condo(?:minium)?\s+fees?|maintenance\s+fees?|common\s+expenses"), ("mortgage_rent", r"\brent\b|\blease\b|mortgage"),
+    ("credit_card", r"credit\s+card|minimum\s+payment"), ("loan", r"\bloan\b|amortization"),
+    ("subscription", r"subscription|membership"),
+]
+
+def _clean_name(name):
+    """'HYDRO EXAMPLE NETWORKS INC.' -> 'Hydro Example Networks': trimmed, legal suffix dropped, capitals tidied."""
+    name = re.sub(r"\s+", " ", name).strip(" ,;:.")
+    name = re.sub(r"(?:,?\s+(?:inc|ltd|limited|corp|corporation|co|company|llc|llp)\.?)+$", "", name, flags=re.I)
+    if name.isupper():
+        words = name.split(" ")
+        name = " ".join(w.lower() if i and w.lower() in SMALL_WORDS else ("Co-op" if w == "CO-OP" else w.capitalize())
+                        for i, w in enumerate(words))
+    return name
+
+def _distinctive(name):
+    """True when a name has a word of its own, so 'Natural Gas' or 'Your Water' don't count as companies."""
+    words = re.findall(r"[A-Za-z][A-Za-z'&-]*", name.upper())
+    return any(w not in ORG_ENDINGS and w not in GENERIC_WORDS and len(w) > 1 for w in words)
+
+def _guess_category(text, name):
+    """Strongest evidence first: words in the company's name, then the units billed, then (weakly) the wording."""
+    score = {category: 3 * len(re.findall(pattern, name, re.I)) + len(re.findall(pattern, text, re.I)) / 10
+             for category, pattern in CATEGORY_HINTS}
+    if re.search(r"\d\s*kwh\b", text, re.I): score["electricity"] += 4
+    if re.search(r"\d\s*(?:gal|gallons)\b", text, re.I): score["water"] += 4
+    if re.search(r"\d\s*(?:m³|m3|cu\.?\s*met(?:er|re)s?)", text, re.I):
+        score["natural_gas" if re.search(r"natural\s+gas|gas\s+supply", text, re.I) else "water"] += 3
+    category, best = max(score.items(), key=lambda item: item[1])
+    return category if best >= 1 else "other"
+
+def detect_provider(text):
+    """The company that issued a bill, read from its text: (name, category), or None when nothing is convincing."""
+    scores = {}
+    def add(raw, points):
+        name = _clean_name(raw)
+        if len(name) < 3 or NOT_THE_BILLER.search(name) or not _distinctive(name): return
+        key = re.sub(r"[^a-z0-9]", "", name.lower())
+        shown, total = scores.get(key, (name, 0))
+        scores[key] = (shown, total + points)
+    lines = text.split("\n")
+    starts = [0]
+    for line in lines[:-1]: starts.append(starts[-1] + len(line) + 1)
+    for payee in re.finditer(PAYEE, text, re.I):                      # "Make cheques payable to: …"
+        row = max(i for i, start in enumerate(starts) if start <= payee.start())
+        after = text[payee.end():starts[row] + len(lines[row])].strip()
+        if after and not re.match(r"(?:p\.?\s*o\.?\s*box|\d)", after, re.I):
+            if run := re.match(NAME_RUN, re.split(r"\s{2,}", after)[0]): add(run[0], 5)
+            continue
+        column = payee.start() - starts[row]                         # name printed under the label instead
+        for line in lines[row + 1:row + 3]:
+            pieces = [(m.start(), m[0]) for m in re.finditer(r"\S+(?: \S+)*", line)]
+            pieces = [(abs(col - column), piece) for col, piece in pieces if not re.match(r"(?:p\.?\s*o\.?\s*box|\d)", piece, re.I)]
+            if pieces and (run := re.match(NAME_RUN, min(pieces)[1])):
+                add(run[0], 5); break
+    for gov in re.finditer(GOVERNMENT, text): add(gov[0], 4)  # "City of …", "Municipality of …"
+    for row, line in enumerate(lines):                               # names ending like a company
+        for run in re.finditer(NAME_RUN, line):
+            words = run[0].replace(".", "").upper().split(" ")
+            while words and words[-1] not in ORG_ENDINGS: words.pop()
+            if len(words) >= 2: add(" ".join(run[0].split(" ")[:len(words)]), 3 if row < 15 else 1)
+    domains = {d.replace("-", "") for d in re.findall(WEB_DOMAIN, text.lower())}
+    for key, (name, total) in list(scores.items()):
+        if any(d in key or key in d for d in domains if len(d) >= 5): scores[key] = (name, total + 3)
+    if not scores: return None
+    name, total = max(scores.values(), key=lambda item: item[1])
+    return (name, _guess_category(text, name)) if total >= 3 else None
+
+def _parse_general(text, provider, category, detected=False):
     amount = _labelled(text, AMOUNT_LABELS, GENERAL_MONEY)
     if amount is None: raise BillImportError(f"Couldn't find the amount due on this {provider} bill.")
     due = _labelled(text, DUE_LABELS, DATE_ANY)
@@ -270,13 +366,14 @@ def _parse_general(text, provider, category):
     statement_date = _date(statement[0]) if statement else _date(due[0])
     total = _money(amount[0])
     notes = ["Read by the general bill reader: check the amount and dates."]
+    if detected: notes.append(f"The company name, {provider}, was read from the bill; rename it under Providers if it's wrong.")
     if statement is None: notes.append("The bill date wasn't found, so the due date is used.")
     return ParsedBill(
         provider=provider, category=category, frequency="monthly", account_number=account[0].strip(),
         service_address=address[1].strip() if address else "", statement_date=statement_date,
         due_date=_date(due[0]) if due else statement_date, amount_due=total, amount_to_pay=total,
         period_start=_date(period[1]) if period else None, period_end=_date(period[2]) if period else None,
-        needs_review=True, note=" ".join(notes),
+        needs_review=True, provider_detected=detected, note=" ".join(notes),
     )
 
 def parse_bill(text, fallback=None):
@@ -290,10 +387,10 @@ def parse_bill(text, fallback=None):
     elif "enbridgegas.com" in lower: parser = _parse_enbridge
     elif "wysemeter" in lower: parser = _parse_wyse
     elif known := recognize_provider(text) or fallback: parser = lambda t: _parse_general(t, *known)
+    elif detected := detect_provider(text): parser = lambda t: _parse_general(t, *detected, detected=True)
     else:
-        raise BillImportError(f"The provider on this bill wasn't recognized. Choose it under “Read unrecognized bills as” "
-                              f"and upload again, or add the bill by hand. Own readers: {DEDICATED}; other major Ontario "
-                              f"providers are read generally.")
+        raise BillImportError("The company's name couldn't be found on this bill. Choose the provider under “Read "
+                              "unrecognized bills as” and upload it again, or add the bill by hand.")
     try: return parser(text)
     except (ValueError, KeyError, InvalidOperation) as exc:
         raise BillImportError("A date or amount on this bill couldn't be read.") from exc
@@ -336,13 +433,21 @@ def match_property(user, address):
 def _digits(value): return re.sub(r"\D", "", value)
 
 def _provider_for(user, bill):
-    return (Provider.objects.filter(owner__isnull=True, name=bill.provider).first()
-            or Provider.objects.filter(owner=user, name__iexact=bill.provider).first()
-            or Provider.objects.create(owner=user, name=bill.provider, category=bill.category, province_region="ON"))
+    """The built-in or custom provider with the bill's provider name, creating a custom one if needed."""
+    existing = (Provider.objects.filter(owner__isnull=True, name=bill.provider).first()
+                or Provider.objects.filter(owner=user, name__iexact=bill.provider).first())
+    if existing: return existing, False
+    return Provider.objects.create(owner=user, name=bill.provider, category=bill.category, province_region="ON"), True
 
-def _account_for(user, provider, bill, property):
+def _account_for(user, bill, property):
+    """(account, new account, new provider). A company read off the bill is matched by account number first, so
+    later bills still find the account after its provider is renamed."""
+    if bill.provider_detected:
+        for account in BillAccount.objects.filter(owner=user).select_related("provider"):
+            if _digits(account.account_number) == _digits(bill.account_number): return account, False, False
+    provider, new_provider = _provider_for(user, bill)
     for account in BillAccount.objects.filter(owner=user, provider=provider):
-        if _digits(account.account_number) == _digits(bill.account_number): return account, False
+        if _digits(account.account_number) == _digits(bill.account_number): return account, False, new_provider
     prop = match_property(user, bill.service_address) or property  # the chosen property is only a fallback
     if prop is None:
         raise BillImportError(f"{bill.provider} account {bill.account_number} isn't in the tracker yet, and its service address "
@@ -353,7 +458,7 @@ def _account_for(user, provider, bill, property):
     try: account.full_clean()
     except ValidationError as exc: raise BillImportError(f"The new {bill.provider} account couldn't be saved: {exc.messages[0]}") from exc
     account.save()
-    return account, True
+    return account, True, new_provider
 
 PAYMENT_FIELDS = ["amount_paid", "payment_date", "payment_method", "updated_at"]
 
@@ -411,14 +516,14 @@ def _schedule_autopay(account, payment, bill):
     return scheduled
 
 def _import_one(user, bill, f, filename, property):
-    provider = _provider_for(user, bill)
-    account, new_account = _account_for(user, provider, bill, property)
+    account, new_account, new_provider = _account_for(user, bill, property)
+    label = f"{account.provider.name} · {bill.statement_date:%b %Y}"
     year, month = bill.statement_date.year, bill.statement_date.month
     if duplicate := account.payments.filter(statement_date=bill.statement_date).first():
-        return ImportResult(filename, "duplicate", f"{bill.label}: already imported.", duplicate)
+        return ImportResult(filename, "duplicate", f"{label}: already imported.", duplicate)
     payment = account.payments.filter(billing_year=year, billing_month=month).first()
     if payment and payment.statement_date:
-        raise BillImportError(f"{bill.label}: a different bill dated {_date_label(payment.statement_date)} is already recorded "
+        raise BillImportError(f"{label}: a different bill dated {_date_label(payment.statement_date)} is already recorded "
                               f"for that month. Edit that record by hand.")
     outcome = "updated" if payment else "created"
     payment = payment or BillPayment(owner=user, bill_account=account, billing_year=year, billing_month=month)
@@ -431,7 +536,8 @@ def _import_one(user, bill, f, filename, property):
     Attachment.objects.create(payment=payment, file=f, original_name=filename[:255])
     settled = _settle_earlier(account, bill)
     scheduled = _schedule_autopay(account, payment, bill) if bill.autopay_date else []
-    message = f"{bill.label}: {_money_label(bill.amount_due)} due {_date_label(bill.due_date)}"
+    message = f"{label}: {_money_label(bill.amount_due)} due {_date_label(bill.due_date)}"
+    if new_provider: message += f" (new provider, read from the bill)"
     if new_account: message += f" (new account at {account.property})"
     if outcome == "updated": message += " (filled in the existing record)"
     if covered: message += ", covered by a credit on the account"

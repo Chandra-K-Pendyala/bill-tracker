@@ -9,7 +9,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from tracker.bill_import import BillImportError, import_bills, parse_bill, recognize_provider
+from tracker.bill_import import BillImportError, _clean_name, _guess_category, detect_provider, import_bills, parse_bill, recognize_provider
 from tracker.models import BillAccount, BillPayment, Property, Provider
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -100,18 +100,26 @@ class ReaderTests(SimpleTestCase):
         self.assertEqual(bill.amount_due, Decimal("87.65"))
         self.assertTrue(bill.needs_review)
 
-    def test_unrecognized_provider_needs_a_fallback(self):
-        text = fixture("general_unknown_provider.txt")
-        with self.assertRaises(BillImportError):
-            parse_bill(text)
-        bill = parse_bill(text, ("Lakeview Propane Co-op", "other"))
-        self.assertEqual(bill.provider, "Lakeview Propane Co-op")
-        self.assertEqual(bill.category, "other")
+    def test_company_name_is_read_from_the_bill(self):
+        bill = parse_bill(fixture("general_unknown_provider.txt"))
+        self.assertEqual((bill.provider, bill.category), ("Lakeview Propane Co-op", "other"))
+        self.assertTrue(bill.provider_detected)
         self.assertEqual(bill.account_number, "LP-204871")
         self.assertEqual(bill.statement_date, date(2026, 9, 1))
         self.assertEqual(bill.due_date, date(2026, 9, 21))
         self.assertEqual(bill.amount_due, Decimal("240.01"))
         self.assertTrue(bill.needs_review)
+        self.assertIn("read from the bill", bill.note)
+
+    def test_chosen_provider_beats_the_name_on_the_bill(self):
+        bill = parse_bill(fixture("general_unknown_provider.txt"), ("Lakeview Gas", "natural_gas"))
+        self.assertEqual((bill.provider, bill.category, bill.provider_detected), ("Lakeview Gas", "natural_gas", False))
+
+    def test_bill_without_a_company_name_needs_a_choice(self):
+        text = "Statement\nAccount Number: 4455667\nBill Date: Sep 1, 2026\nTotal Amount Due   $12.50\nDue Date: Sep 20, 2026\n"
+        with self.assertRaisesMessage(BillImportError, "company's name couldn't be found"):
+            parse_bill(text)
+        self.assertEqual(parse_bill(text, ("Corner Store", "other")).amount_due, Decimal("12.50"))
 
     def test_recognize_provider(self):
         self.assertEqual(recognize_provider("Your bill from Elexicon Energy Inc."), ("Elexicon Energy", "electricity"))
@@ -206,14 +214,38 @@ class ImportTests(TestCase):
         self.assertEqual(payment.bill_account.provider.name, "Alectra Utilities")
         self.assertIn("check it", results[0].message)
 
-    def test_fallback_provider_for_unrecognized_bills(self):
+    def test_new_company_is_added_from_the_bill(self):
         results = self.run_import("general_unknown_provider.txt")
-        self.assertEqual(results[0].outcome, "error")
-        other = Provider.objects.create(owner=self.user, name="Lakeview Propane Co-op", category="other")
+        self.assertEqual(results[0].outcome, "created")
+        self.assertIn("new provider", results[0].message)
+        provider = results[0].payment.bill_account.provider
+        self.assertEqual((provider.name, provider.category, provider.owner, provider.is_custom), ("Lakeview Propane Co-op", "other", self.user, True))
+        self.assertTrue(results[0].payment.needs_review)
+
+    def test_later_bills_find_the_account_after_the_provider_is_renamed(self):
+        first = self.run_import("general_unknown_provider.txt")[0].payment
+        provider = first.bill_account.provider
+        provider.name = "Lakeview Co-op"
+        provider.save()
+        october = fixture("general_unknown_provider.txt").replace("2026-09-01", "2026-10-01").replace("2026-09-21", "2026-10-21")
+        with mock.patch(EXTRACT, return_value=october):
+            result = import_bills(self.user, [(pdf("oct.pdf"), "oct.pdf")])[0]
+        self.assertEqual(result.outcome, "created")
+        self.assertEqual(result.payment.bill_account, first.bill_account)
+        self.assertEqual(Provider.objects.filter(owner=self.user).count(), 1)
+
+    def test_chosen_provider_is_used_on_import(self):
+        other = Provider.objects.create(owner=self.user, name="Lakeview Gas", category="natural_gas")
         results = self.run_import("general_unknown_provider.txt", provider=other)
         self.assertEqual(results[0].outcome, "created")
         self.assertEqual(results[0].payment.bill_account.provider, other)
         self.assertTrue(results[0].payment.needs_review)
+
+    def test_same_bill_twice_is_skipped_even_for_a_new_company(self):
+        self.run_import("general_unknown_provider.txt")
+        results = self.run_import("general_unknown_provider.txt")
+        self.assertEqual(results[0].outcome, "duplicate")
+        self.assertEqual(BillPayment.objects.count(), 1)
 
 @override_settings(MEDIA_ROOT=MEDIA_ROOT)
 class ViewTests(TestCase):
@@ -291,3 +323,34 @@ class ViewTests(TestCase):
         payment.payment_date = timezone.localdate() - timedelta(days=1)
         payment.save()
         self.assertEqual(payment.effective_status, "paid")
+
+
+class DetectProviderTests(SimpleTestCase):
+    def test_payee_line(self):
+        text = "Statement\nPlease make cheques payable to: Northern Lights Water Co.\nAccount Number: 99887766\n"
+        self.assertEqual(detect_provider(text), ("Northern Lights Water", "water"))
+
+    def test_payee_printed_under_the_label_next_to_the_customer(self):
+        text = ("                                                Make Cheque Payable to\n"
+                "    SAMPLE, JANE                                TOWNSHIP OF EXAMPLE VALLEY\n"
+                "    12 MAPLE ST                                 PO BOX 1\n")
+        self.assertEqual(detect_provider(text)[0], "Township of Example Valley")
+
+    def test_bodies_that_are_not_the_biller_are_skipped(self):
+        text = ("Ontario Energy Board rules apply to this bill.\nBluebird Power Inc.\n"
+                "Pay at bluebirdpower.ca\nUsage this month: 512 kWh\n")
+        self.assertEqual(detect_provider(text), ("Bluebird Power", "electricity"))
+
+    def test_generic_phrases_are_not_companies(self):
+        self.assertIsNone(detect_provider("Your Water Charges\nNatural Gas\nTotal Amount Due $10.00\n"))
+
+    def test_clean_name(self):
+        self.assertEqual(_clean_name("LAKEVIEW PROPANE CO-OP"), "Lakeview Propane Co-op")
+        self.assertEqual(_clean_name("Hydro Example Networks Inc."), "Hydro Example Networks")
+        self.assertEqual(_clean_name("MUNICIPALITY OF NORTH EXAMPLE"), "Municipality of North Example")
+
+    def test_guess_category(self):
+        self.assertEqual(_guess_category("Usage: 640 kWh", "Acme Utilities"), "electricity")
+        self.assertEqual(_guess_category("Tier 1 - 1710 GAL", "Acme Meter Solutions"), "water")
+        self.assertEqual(_guess_category("Monthly plan", "Acme Wireless"), "mobile")
+        self.assertEqual(_guess_category("Delivered 300 L", "Acme Propane"), "other")

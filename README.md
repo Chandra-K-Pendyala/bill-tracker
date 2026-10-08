@@ -67,7 +67,7 @@ The tracker reads the text of bill PDFs; scanned bills without text can't be rea
 
 - **Read exactly:** Hydro One, Toronto Hydro, Enbridge Gas, Wyse Meter Solutions and Municipality of North Grenville water.
 - **Read generally:** about 55 other major Ontario providers listed in `tracker/providers.py`, such as Alectra, Hydro Ottawa, Elexicon, London Hydro, Enova Power, city water bills, Bell, Rogers and Telus. These bills are flagged "Check" until you open and save them.
-- **Anything else:** choose the provider under "Read unrecognized bills as" when you upload, or add the bill by hand.
+- **Any other company:** the tracker reads the company's name from the bill and adds it to your providers, with a category guessed from the bill. Its bills are flagged "Check", and later bills find the account by its number even if you rename the provider. If a bill's company can't be found, choose it under "Read unrecognized bills as".
 
 A sample bill from a provider is all that's needed to give it its own reader.
 

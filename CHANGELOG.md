@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.0 — 2026-10-08
+
+### Added
+- Bills from companies that aren't in the provider list now import too. The tracker reads the company's name from the bill: the payee line ("Make cheques payable to…"), a government name ("City of…", "Municipality of…") or a business-style name ("… Inc.", "… Utilities", "… Co-op"), checked against the bill's web address.
+- The tracker adds the company to your providers with a category guessed from the bill: from the company's name first, then the units billed, such as kWh or gallons. Its bills are flagged "Check".
+- Later bills from that company find its account by account number, even after you rename the provider.
+- With the known-provider list switched off, it named the right company and category on all 27 real bills from five companies used for testing.
+
+### Changed
+- "Read unrecognized bills as" on the import page is now only an override, for a bill whose company name can't be found.
+
 ## 1.3.0 — 2026-10-08
 
 ### Added

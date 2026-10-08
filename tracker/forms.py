@@ -109,7 +109,7 @@ class BillImportForm(forms.Form):
                                       help_text="Used for a new account only when its service address doesn't match one of your properties.")
     provider = forms.ModelChoiceField(queryset=Provider.objects.none(), required=False, empty_label="Recognize automatically",
                                       label="Read unrecognized bills as",
-                                      help_text="Only for bills whose provider isn't recognized. They're read generally and flagged for you to check.")
+                                      help_text="Usually not needed: the company is read from the bill. Choose one only if a bill's company can't be found.")
     def __init__(self, *args, user=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["property"].queryset = Property.objects.filter(owner=user)
