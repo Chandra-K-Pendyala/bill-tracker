@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.0 — 2026-10-11
+
+### Added
+- A read-only bill list for another app of yours, such as Memento for bill reminders: `GET /api/bills/` with a key. It lists your unpaid bills and the bills due in the last 90 days, with company, property, amounts, due date and status. Account numbers are left out.
+- Make a key with `manage.py create_api_token <username>`. The key is shown once; only a fingerprint of it is stored. Running the command again replaces the key, and deleting it in the admin turns it off.
+
 ## 1.4.1 — 2026-10-08
 
 ### Fixed

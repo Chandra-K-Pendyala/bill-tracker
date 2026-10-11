@@ -1,3 +1,5 @@
+import hashlib
+import secrets
 from pathlib import Path
 import uuid
 from django.contrib.auth.models import User
@@ -170,3 +172,23 @@ def delete_attachment_file(sender, instance, **kwargs):
     # Remove the stored file once the deletion commits (also runs for cascaded account/payment deletes).
     name, storage = instance.file.name, instance.file.storage
     if name: transaction.on_commit(lambda: storage.delete(name))
+
+class ApiToken(models.Model):
+    """A read-only key for another app of yours (Memento) to read your bills. Only a hash of the key is stored."""
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="api_tokens")
+    name = models.CharField(max_length=50)
+    key_hash = models.CharField(max_length=64, unique=True, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True, editable=False)
+    class Meta:
+        ordering = ["owner", "name"]
+        constraints = [models.UniqueConstraint(fields=["owner", "name"], name="unique_api_token_name")]
+    @staticmethod
+    def hash(key): return hashlib.sha256(key.encode()).hexdigest()
+    @classmethod
+    def issue(cls, owner, name):
+        """Create (or replace) the key called `name`; returns the key, which is shown once and never stored."""
+        key = "bt_" + secrets.token_urlsafe(32)
+        cls.objects.update_or_create(owner=owner, name=name, defaults={"key_hash": cls.hash(key), "last_used_at": None})
+        return key
+    def __str__(self): return f"{self.owner} — {self.name}"

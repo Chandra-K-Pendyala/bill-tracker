@@ -1,5 +1,5 @@
 from django.urls import path
-from . import views
+from . import api, views
 urlpatterns = [
  path("", views.dashboard, name="dashboard"),
  path("properties/", views.property_list, name="property_list"), path("properties/new/", views.property_form, name="property_add"),
@@ -17,4 +17,5 @@ urlpatterns = [
  path("reports/", views.reports, name="reports"), path("reminders/", views.reminders, name="reminders"),
  path("exports/accounts.csv", views.export_accounts, name="export_accounts"), path("exports/payments.csv", views.export_payments, name="export_payments"),
  path("settings/", views.settings_view, name="settings"),
+ path("api/bills/", api.bills, name="api_bills"),
 ]

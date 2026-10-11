@@ -142,6 +142,34 @@ It pulls the latest commit, rebuilds the image, starts the stack, waits until it
 
 **Success:** "Deploying <commit>: <message>", then "Up: the app and its database answer on http://127.0.0.1:3020."
 
+## Let Memento read your bills (optional)
+
+Memento sends bill reminders from a read-only list at `/api/bills/`. Two locks protect it: a Cloudflare service
+token (instead of the emailed code), then the tracker's own read-only key.
+
+**1. Make a service token.** Zero Trust: Access controls, Service credentials, Service Tokens, Create Service Token.
+Name it "memento", choose "Non-expiring", and copy the Client ID and Client Secret (the secret is shown only once).
+
+**2. Let only that token into `/api/`.** Zero Trust: Access controls, Applications, Add an application, Self-hosted.
+
+1. Name it "Bill tracker API".
+2. Add the public hostname `bills.whobrokeprod.com` with the path `api/`.
+3. Add a policy: Action **Service Auth**, Include **Service Token** "memento".
+4. Save. Cloudflare uses the most specific path, so every other page keeps the emailed code.
+
+**3. Make the tracker's key** on the server (use the username you sign in with). It is shown once:
+
+```bash
+cd /opt/bill-tracker && docker compose exec app python manage.py create_api_token <username>
+```
+
+**4. Give Memento the three values:** on the Mac, run `ssh -t memento 'bash ~/memento-setup/06-bill-reminders.sh'`
+and paste the key, the Client ID and the Client Secret when asked.
+
+**Success:** the script prints "Connected: N bills read."
+
+To turn it off: delete the key in the tracker's admin (Api tokens), or revoke the service token in Zero Trust.
+
 ## Backups
 
 A systemd timer runs `scripts/backup.sh` every night at 03:50 (plus up to 10 minutes), after the cookbook's 03:30 backup. It writes `bill_tracker-db-<time>.sql.gz` and `bill_tracker-uploads-<time>.tar.gz` to `/var/backups/bill-tracker` and keeps the newest 14 of each. The folder is readable by root only. Backups stay on the server, so a failed disk would take them too: copy one to the Mac now and then.

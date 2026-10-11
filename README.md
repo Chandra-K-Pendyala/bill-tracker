@@ -118,6 +118,15 @@ Migrations and provider seeding run idempotently at app startup. To create anoth
 docker compose exec app python manage.py createsuperuser
 ```
 
+Let another app of yours read your bills (read-only, for example Memento's bill reminders). The key is shown once:
+
+```bash
+docker compose exec app python manage.py create_api_token <username>
+```
+
+The app then calls `GET /api/bills/` with the header `Authorization: Bearer <key>`. Behind Cloudflare Access, give
+`/api/` its own Access application with a service token (see docs/DEPLOY.md).
+
 Stop without deleting data:
 
 ```bash
