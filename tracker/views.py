@@ -6,7 +6,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import PasswordChangeForm
 from django.contrib.auth import update_session_auth_hash
 from django.db.models import Avg, Count, F, Q, Sum
-from django.db.models.deletion import ProtectedError
+from django.db.models.deletion import ProtectedError, RestrictedError
 from django.db.models.functions import Coalesce
 from django.http import FileResponse, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -15,8 +15,8 @@ from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
 from .bill_import import import_bills
-from .forms import BillAccountForm, BillImportForm, BillPaymentForm, ProfileForm, PropertyForm, ProviderForm
-from .models import CATEGORIES, CATEGORY_LABELS, MONTHS, STATUS_FILTERS, Attachment, BillAccount, BillPayment, Property, Provider
+from .forms import BillAccountForm, BillImportForm, BillPaymentForm, MarkPaidForm, PaymentCardForm, ProfileForm, PropertyForm, ProviderForm
+from .models import CATEGORIES, CATEGORY_LABELS, MONTHS, STATUS_FILTERS, Attachment, BillAccount, BillPayment, PaymentCard, Property, Provider
 
 ZERO = Decimal("0")
 OPEN_BALANCE = Coalesce(Sum(F("amount_due") - F("amount_paid")), ZERO)
@@ -34,11 +34,12 @@ def _payment_filters(request, qs):
     if params.get("province"): qs = qs.filter(bill_account__province__iexact=params["province"].strip())
     if params.get("address"): qs = qs.filter(bill_account__service_address__icontains=params["address"])
     if params.get("review") == "1": qs = qs.filter(needs_review=True)
+    if params.get("card", "").isdigit(): qs = qs.filter(card_id=params["card"])
     return qs
 
 def _filter_options(user):
     return {"providers": Provider.objects.filter(Q(owner__isnull=True) | Q(owner=user)), "categories": CATEGORIES,
-            "properties": Property.objects.filter(owner=user), "months": MONTHS, "status_choices": STATUS_FILTERS.items(),
+            "properties": Property.objects.filter(owner=user), "cards": PaymentCard.objects.filter(owner=user), "months": MONTHS, "status_choices": STATUS_FILTERS.items(),
             "years": range(timezone.localdate().year + 1, timezone.localdate().year - 10, -1)}
 
 def _bars(rows, label_key, labels=None):
@@ -49,11 +50,12 @@ def _bars(rows, label_key, labels=None):
              "pct": round(r["total"] / top * 100) if top else 0} for r in rows]
 
 def _breakdowns(qs):
-    """Billed totals by category, provider and property for a payment queryset."""
+    """Billed totals by category, provider and property, and paid totals by card, for a payment queryset."""
     by = lambda key: list(qs.values(key).annotate(total=Sum("amount_due")).order_by("-total"))
     return {"category_bars": _bars(by("bill_account__provider__category"), "bill_account__provider__category", CATEGORY_LABELS),
             "provider_bars": _bars(by("bill_account__provider__name")[:10], "bill_account__provider__name"),
-            "property_bars": _bars(by("bill_account__property__name"), "bill_account__property__name")}
+            "property_bars": _bars(by("bill_account__property__name"), "bill_account__property__name"),
+            "card_bars": _bars(list(qs.filter(card__isnull=False).values("card__name").annotate(total=Sum("amount_paid")).order_by("-total")), "card__name")}
 
 def _property_summaries(user, today):
     stats = {row["bill_account__property"]: row for row in BillPayment.objects.filter(owner=user)
@@ -183,7 +185,7 @@ def account_delete(request, pk):
 
 @login_required
 def payment_list(request):
-    qs = BillPayment.objects.filter(owner=request.user).select_related("bill_account__provider", "bill_account__property").prefetch_related("attachments")
+    qs = BillPayment.objects.filter(owner=request.user).select_related("bill_account__provider", "bill_account__property", "card").prefetch_related("attachments")
     qs = _payment_filters(request, qs)
     return render(request, "tracker/payment_list.html", {"payments": qs, **_filter_options(request.user)})
 
@@ -202,24 +204,63 @@ def payment_form(request, pk=None):
     return render(request, "tracker/form.html", {"form": form, "title": "Edit payment" if obj else "Add monthly payment", "cancel_url": _next_url(request, "payment_list"),
                                                  "attachments": obj.attachments.all() if obj else [], "payment": obj})
 
+def _last_paid_with(payment):
+    """What this account was last paid with, as a "Paid with" choice, so the usual card is already picked."""
+    last = (BillPayment.objects.filter(bill_account=payment.bill_account).exclude(payment_method="").exclude(pk=payment.pk)
+            .select_related("card").order_by("-payment_date", "-pk").first())
+    if last is None: return ""
+    if last.card_id: return f"card:{last.card_id}" if last.card.active else ""
+    return f"method:{last.payment_method}"
+
 @login_required
-@require_POST
 def payment_mark_paid(request, pk):
-    """Mark a bill paid. A bill's total includes any balance carried from earlier bills of the same account, so
-    those are marked paid too."""
+    """Mark a bill paid, saying how and when (the page asks; a bare POST means paid today, method not recorded).
+    A bill's total includes any balance carried from earlier bills of the same account, so those are marked paid too."""
     payment = get_object_or_404(BillPayment.objects.select_related("bill_account__provider"), pk=pk, owner=request.user)
     today = timezone.localdate()
     earlier = (BillPayment.objects.filter(bill_account=payment.bill_account, amount_paid__lt=F("amount_due"))
                .filter(Q(billing_year__lt=payment.billing_year) | Q(billing_year=payment.billing_year, billing_month__lt=payment.billing_month)))
     marked = [p for p in [payment, *earlier] if p.amount_paid < p.amount_due]
-    for p in marked:
-        p.amount_paid = p.amount_due
-        p.payment_date = p.payment_date or today
-        p.save(update_fields=["amount_paid", "payment_date", "updated_at"])
-    if marked:
-        extra = f", and {len(marked) - 1} earlier bill{'s' if len(marked) > 2 else ''} carried into it" if len(marked) > 1 else ""
-        messages.success(request, f"Marked {payment.bill_account.provider.name} · {payment.period_label} as paid{extra}.")
-    return redirect(_next_url(request, "payment_list"))
+    asked = request.method == "POST" and "payment_date" in request.POST
+    form = MarkPaidForm(request.POST if asked else None, user=request.user,
+                        initial={"payment_date": today, "paid_with": _last_paid_with(payment)})
+    if request.method == "POST" and (not asked or form.is_valid()):
+        method, card = form.cleaned_data["paid_with"] if asked else ("", None)
+        paid_on = form.cleaned_data["payment_date"] if asked else None
+        for p in marked:
+            p.amount_paid = p.amount_due
+            p.payment_date = paid_on or p.payment_date or today
+            if method: p.payment_method, p.card = method, card
+            p.save(update_fields=["amount_paid", "payment_date", "payment_method", "card", "updated_at"])
+        if marked:
+            extra = f", and {len(marked) - 1} earlier bill{'s' if len(marked) > 2 else ''} carried into it" if len(marked) > 1 else ""
+            with_card = f" with {card.name}" if card else ""
+            messages.success(request, f"Marked {payment.bill_account.provider.name} · {payment.period_label} as paid{with_card}{extra}.")
+        return redirect(_next_url(request, "payment_list"))
+    return render(request, "tracker/mark_paid.html", {"form": form, "payment": payment, "carried": len([p for p in marked if p.pk != payment.pk]),
+                                                      "total": sum((p.amount_due - p.amount_paid for p in marked), ZERO),
+                                                      "has_cards": bool(form.cards), "next": _next_url(request, "payment_list")})
+
+@login_required
+def card_list(request):
+    cards = PaymentCard.objects.filter(owner=request.user).annotate(used=Count("payments"), paid=Coalesce(Sum("payments__amount_paid"), ZERO))
+    return render(request, "tracker/card_list.html", {"cards": cards})
+
+@login_required
+def card_form(request, pk=None):
+    obj = get_object_or_404(PaymentCard, pk=pk, owner=request.user) if pk else None
+    form = PaymentCardForm(request.POST or None, instance=obj, user=request.user)
+    if request.method == "POST" and form.is_valid():
+        card = form.save(); messages.success(request, f"Card “{card.name}” saved."); return redirect(_next_url(request, "card_list"))
+    return render(request, "tracker/form.html", {"form": form, "title": "Edit card" if obj else "Add a card", "cancel_url": _next_url(request, "card_list")})
+
+@login_required
+@require_POST
+def card_delete(request, pk):
+    obj = get_object_or_404(PaymentCard, pk=pk, owner=request.user)
+    try: obj.delete(); messages.success(request, "Card deleted.")
+    except RestrictedError: messages.error(request, "This card paid some bills, so it stays for your records. Edit it and untick Active to hide it.")
+    return redirect("card_list")
 
 @login_required
 def bill_import(request):
@@ -284,14 +325,15 @@ def export_accounts(request):
 
 @login_required
 def export_payments(request):
-    qs = _payment_filters(request, BillPayment.objects.filter(owner=request.user).select_related("bill_account__provider", "bill_account__property"))
+    qs = _payment_filters(request, BillPayment.objects.filter(owner=request.user).select_related("bill_account__provider", "bill_account__property", "card"))
     response = HttpResponse(content_type="text/csv", headers={"Content-Disposition": 'attachment; filename="payment-history.csv"'})
     w = csv.writer(response); w.writerow(["Property", "Provider", "Account", "Billing month", "Billing year", "Statement date", "Amount due", "Amount paid",
-                                          "Due date", "Payment date", "Status", "Method", "Reference", "Usage", "Usage unit", "Category", "Province", "Address"])
+                                          "Due date", "Payment date", "Status", "Method", "Card", "Reference", "Usage", "Usage unit", "Category", "Province", "Address"])
     for p in qs:
         a = p.bill_account
         w.writerow([a.property.name if a.property else "", a.provider.name, a.account_number, p.billing_month, p.billing_year, p.statement_date or "",
-                    p.amount_due, p.amount_paid, p.due_date, p.payment_date or "", p.effective_status, p.get_payment_method_display(), p.reference_number,
+                    p.amount_due, p.amount_paid, p.due_date, p.payment_date or "", p.effective_status, p.get_payment_method_display(),
+                    p.card.name if p.card else "", p.reference_number,
                     "" if p.usage is None else p.usage, p.usage_unit, a.provider.get_category_display(), a.province, a.service_address])
     return response
 

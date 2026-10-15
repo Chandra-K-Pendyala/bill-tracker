@@ -1,0 +1,6 @@
+{% extends 'base.html' %}{% block content %}<div class="page-head"><div><h1>Mark paid</h1><p class="muted">{{ payment.bill_account.provider.name }} · {{ payment.period_label }} · ${{ total|floatformat:"2g" }}{% if carried %} (includes {{ carried }} earlier bill{{ carried|pluralize }} carried into it){% endif %}</p></div></div>
+{% if not total %}<p class="message info">This bill is already paid.</p>{% endif %}
+<form method="post" class="card form-grid">{% csrf_token %}<input type="hidden" name="next" value="{{ next }}">
+{% for field in form %}<label>{{ field.label }}{{ field }}{% for error in field.errors %}<span class="field-error">{{ error }}</span>{% endfor %}</label>{% endfor %}
+{% if not has_cards %}<p class="muted full">To pick a card here, <a href="{% url 'card_add' %}?next={{ request.get_full_path|urlencode }}">add the cards you pay bills with</a>.</p>{% endif %}
+<div class="actions full"><button class="button primary" type="submit"{% if not total %} disabled{% endif %}>Mark paid</button><a class="button secondary" href="{{ next }}">Cancel</a></div></form>{% endblock %}

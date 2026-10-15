@@ -23,6 +23,16 @@ MONTHS = [(m, timezone.datetime(2000, m, 1).strftime("%B")) for m in range(1, 13
 ADDRESS_FIELDS = {"service_address": "street_address", "city": "city", "province": "province", "postal_code": "postal_code"}
 STATUS_FILTERS = {"paid": "Paid", "unpaid": "Unpaid", "partially_paid": "Partially paid", "overdue": "Overdue"}
 STATUS_LABELS = {**STATUS_FILTERS, "scheduled": "Auto-pay scheduled"}  # scheduled: paid by a withdrawal still ahead
+# Companies that issue credit cards in Canada. "Other" covers any card not listed (give it a nickname).
+CARD_ISSUERS = [
+    ("amex", "American Express"), ("atb", "ATB Financial"), ("bmo", "BMO"), ("brim", "Brim Financial"),
+    ("canadian_tire", "Canadian Tire (Triangle)"), ("capital_one", "Capital One"), ("cibc", "CIBC"), ("desjardins", "Desjardins"),
+    ("home_trust", "Home Trust"), ("mbna", "MBNA"), ("national_bank", "National Bank"), ("neo", "Neo Financial"),
+    ("pc_financial", "PC Financial"), ("rbc", "RBC Royal Bank"), ("rogers", "Rogers Bank"), ("scotiabank", "Scotiabank"),
+    ("simplii", "Simplii Financial"), ("tangerine", "Tangerine"), ("td", "TD"), ("wealthsimple", "Wealthsimple"),
+    ("other", "Other (custom)"),
+]
+CARD_ISSUER_LABELS = dict(CARD_ISSUERS)
 
 class Provider(models.Model):
     owner = models.ForeignKey(User, null=True, blank=True, on_delete=models.CASCADE, related_name="providers")
@@ -96,6 +106,20 @@ class BillAccount(models.Model):
         if missing: raise ValidationError({field: "Required unless you choose a property." for field in missing})
     def __str__(self): return f"{self.provider.name} — {self.account_number}"
 
+class PaymentCard(models.Model):
+    """A credit card you pay bills with, to keep track of which card paid what. Only the card company and a nickname
+    are stored, never the card number."""
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="cards")
+    issuer = models.CharField("Card company", max_length=20, choices=CARD_ISSUERS)
+    name = models.CharField(max_length=60, help_text="A nickname you'll recognize, such as “TD Aeroplan Visa”. Never the card number.")
+    active = models.BooleanField(default=True, help_text="Untick to hide a card you no longer use; its past payments keep it.")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    class Meta:
+        ordering = ["name"]
+        constraints = [models.UniqueConstraint(fields=["owner", "name"], name="unique_card_name")]
+    def __str__(self): return self.name
+
 class BillPayment(models.Model):
     STATUSES = [("unpaid", "Unpaid"), ("partially_paid", "Partially paid"), ("paid", "Paid")]
     METHODS = [(x, x.replace("_", " ").title()) for x in ["bank_transfer", "credit_card", "debit", "auto_pay", "cash", "cheque", "other"]]
@@ -114,6 +138,10 @@ class BillPayment(models.Model):
     # Derived from the amounts on every save; "overdue" is computed from the due date (effective_status).
     status = models.CharField(max_length=20, choices=STATUSES, default="unpaid", editable=False)
     payment_method = models.CharField(max_length=20, choices=METHODS, blank=True)
+    # RESTRICT: a card with payments can't be deleted (only made inactive), so the history stays complete; deleting
+    # a whole user still works, because their payments go too.
+    card = models.ForeignKey(PaymentCard, null=True, blank=True, on_delete=models.RESTRICT, related_name="payments",
+                             verbose_name="Credit card", help_text="Which card paid it. Choosing one sets the method to Credit card.")
     reference_number = models.CharField(max_length=120, blank=True)
     usage = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True, help_text="Consumption shown on the bill.")
     usage_unit = models.CharField(max_length=10, choices=USAGE_UNITS, blank=True)
@@ -134,6 +162,7 @@ class BillPayment(models.Model):
             errors["period_end"] = "The period cannot end before it starts."
         if self.bill_account_id and self.bill_account.owner_id != self.owner_id:
             errors["bill_account"] = "Select one of your bill accounts."
+        if self.card_id and self.card.owner_id != self.owner_id: errors["card"] = "Select one of your cards."
         if errors: raise ValidationError(errors)
     @staticmethod
     def status_for(amount_due, amount_paid):
@@ -141,7 +170,8 @@ class BillPayment(models.Model):
         return "partially_paid" if amount_paid > 0 else "unpaid"
     def save(self, *args, **kwargs):
         self.status = self.status_for(self.amount_due, self.amount_paid)
-        if kwargs.get("update_fields") is not None: kwargs["update_fields"] = {*kwargs["update_fields"], "status"}
+        if self.card_id: self.payment_method = "credit_card"  # a card means it was paid by credit card
+        if kwargs.get("update_fields") is not None: kwargs["update_fields"] = {*kwargs["update_fields"], "status", "payment_method"}
         super().save(*args, **kwargs)
     @property
     def balance(self): return max(self.amount_due - self.amount_paid, 0)

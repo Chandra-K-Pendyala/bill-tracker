@@ -1,6 +1,6 @@
 from django.contrib import admin
-from .models import ApiToken, Provider, Property, BillAccount, BillPayment, Attachment
-admin.site.register([Provider, Property, BillAccount, BillPayment, Attachment])
+from .models import ApiToken, Provider, Property, BillAccount, BillPayment, Attachment, PaymentCard
+admin.site.register([Provider, Property, BillAccount, BillPayment, Attachment, PaymentCard])
 
 @admin.register(ApiToken)
 class ApiTokenAdmin(admin.ModelAdmin):

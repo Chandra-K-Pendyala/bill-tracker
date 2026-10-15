@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.6.0 — 2026-10-15
+
+### Added
+- **Cards** (in the menu): add the credit cards you pay bills with, to keep track of which card paid what. Pick the card company from a list of Canadian companies (American Express, BMO, CIBC, Desjardins, MBNA, National Bank, RBC, Scotiabank, TD and more) or choose "Other (custom)" and name it. Only a nickname is kept, never the card number; a name that looks like a card number is refused.
+- **Mark paid** asks "Paid with" (one of your cards, bank transfer, debit, auto pay, cash, cheque, other, or not recorded) and "Date paid" (today by default). The card the account was last paid with is already selected.
+- Earlier bills carried into the one you mark paid are recorded with the same card and date.
+- The payments list shows the card under Paid, the filters have a Card choice, the CSV export has a Card column, and Reports shows "Paid by card".
+
+### Changed
+- Mark paid opens a short page instead of marking the bill paid today in one tap.
+- A card that paid bills can't be deleted, so the history stays complete. Untick Active to hide it.
+
 ## 1.5.0 — 2026-10-11
 
 ### Added

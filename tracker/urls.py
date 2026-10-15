@@ -13,6 +13,8 @@ urlpatterns = [
  path("payments/import/", views.bill_import, name="bill_import"),
  path("payments/<int:pk>/edit/", views.payment_form, name="payment_edit"), path("payments/<int:pk>/delete/", views.payment_delete, name="payment_delete"),
  path("payments/<int:pk>/mark-paid/", views.payment_mark_paid, name="payment_mark_paid"),
+ path("cards/", views.card_list, name="card_list"), path("cards/new/", views.card_form, name="card_add"),
+ path("cards/<int:pk>/edit/", views.card_form, name="card_edit"), path("cards/<int:pk>/delete/", views.card_delete, name="card_delete"),
  path("attachments/<int:pk>/download/", views.attachment_download, name="attachment_download"),
  path("reports/", views.reports, name="reports"), path("reminders/", views.reminders, name="reminders"),
  path("exports/accounts.csv", views.export_accounts, name="export_accounts"), path("exports/payments.csv", views.export_payments, name="export_payments"),

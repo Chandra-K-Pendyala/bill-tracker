@@ -104,9 +104,12 @@ class ViewTests(TestCase):
         self.payment.refresh_from_db()
         self.assertEqual((self.payment.amount_paid, self.payment.status, self.payment.payment_date), (Decimal("100.00"), "paid", self.today))
 
-    def test_mark_paid_requires_post(self):
+    def test_opening_mark_paid_changes_nothing(self):
         self.client.force_login(self.alice)
-        self.assertEqual(self.client.get(reverse("payment_mark_paid", args=[self.payment.pk])).status_code, 405)
+        response = self.client.get(reverse("payment_mark_paid", args=[self.payment.pk]))
+        self.assertContains(response, "Paid with")  # the page asks how it was paid
+        self.payment.refresh_from_db()
+        self.assertEqual(self.payment.status, "unpaid")
 
     def test_mark_paid_only_follows_local_next(self):
         self.client.force_login(self.alice)

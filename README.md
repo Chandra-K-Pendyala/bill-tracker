@@ -49,15 +49,16 @@ The app listens on this computer only (127.0.0.1). To use it from another device
 2. **Import bills:** **Payments → Import bills**. Choose one or more PDFs (see [Supported bills](#supported-bills)). Choosing a property is only needed when a bill's account is new and its street address doesn't match a property.
 3. **Accounts:** created by an import, or added by hand. Open an account to see its history and charts.
 4. **Payments:** one record per account and billing month. Use **Mark paid** when you pay a bill. Bills the import doesn't support can be added by hand, with an optional PDF or image up to 10 MB.
-5. **Dashboard and reminders:** open balance, bills due in the next 30 days, overdue bills, and totals by property, category and provider.
-6. **Reports:** filter by property, month, year, provider, category, status, province or address, and export the result as CSV. Accounts have a separate CSV export.
+5. **Cards:** add the credit cards you pay bills with (a Canadian card company from the list, or a custom one) to keep track of which card paid what. **Mark paid** then asks "Paid with" and already picks the card the account was last paid with. Only a nickname is kept, never card numbers.
+6. **Dashboard and reminders:** open balance, bills due in the next 30 days, overdue bills, and totals by property, category and provider.
+7. **Reports:** filter by property, month, year, provider, category, status, card, province or address, and export the result as CSV. Accounts have a separate CSV export.
 
 How the import fills in records:
 
 - Each bill becomes the record for the month of its statement date. The amount is that bill's own charges; a balance carried forward stays on the earlier bill.
 - Bills list the payments received since the previous bill. Each payment marks the earlier bill with exactly that amount paid, on its own date. North Grenville and Wyse bills don't print payment dates, so those show as paid with no date.
 - When a bill says the provider will withdraw the payment (Toronto Hydro does), the bill is recorded as paid on that date and shows "Auto-pay scheduled" until then. A bill fully covered by a credit is recorded as paid.
-- **Mark paid** also marks earlier unpaid bills of the same account paid, because a bill's total includes balances carried from earlier bills.
+- **Mark paid** also marks earlier unpaid bills of the same account paid, with the same card and date, because a bill's total includes balances carried from earlier bills.
 - A bill that's already recorded is skipped, so importing the same file twice is safe. Within one upload, bills are applied oldest first.
 - Payment status comes from the amounts (paid, partially paid, unpaid). A bill that isn't paid by its due date shows as overdue.
 

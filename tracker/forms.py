@@ -1,7 +1,8 @@
+import re
 from django import forms
 from django.core.validators import FileExtensionValidator
 from django.db.models import Q
-from .models import MONTHS, Attachment, BillAccount, BillPayment, Property, Provider
+from .models import CARD_ISSUER_LABELS, MONTHS, Attachment, BillAccount, BillPayment, PaymentCard, Property, Provider
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_BILL_FILES = 24
@@ -63,7 +64,7 @@ class BillPaymentForm(forms.ModelForm):
     class Meta:
         model = BillPayment
         fields = ["bill_account", "billing_month", "billing_year", "statement_date", "amount_due", "due_date",
-                  "amount_paid", "payment_date", "payment_method", "reference_number", "period_start", "period_end",
+                  "amount_paid", "payment_date", "payment_method", "card", "reference_number", "period_start", "period_end",
                   "usage", "usage_unit", "notes"]
         widgets = {"billing_month": forms.Select(choices=MONTHS), "statement_date": DateInput(), "payment_date": DateInput(),
                    "due_date": DateInput(), "period_start": DateInput(), "period_end": DateInput()}
@@ -77,6 +78,8 @@ class BillPaymentForm(forms.ModelForm):
         else: accounts = accounts.filter(active=True)
         self.fields["bill_account"].queryset = accounts
         self.fields["amount_paid"].help_text = "Status is worked out from the amounts: paid, partially paid, or unpaid."
+        cards = PaymentCard.objects.filter(owner=user)  # active ones, plus the card this payment already has
+        self.fields["card"].queryset = cards.filter(Q(active=True) | Q(pk=self.instance.card_id)) if self.instance.card_id else cards.filter(active=True)
     def clean_attachment(self):
         f = self.cleaned_data.get("attachment")
         if f and f.size > MAX_UPLOAD_BYTES: raise forms.ValidationError("File must be 10 MB or smaller.")
@@ -90,6 +93,57 @@ class BillPaymentForm(forms.ModelForm):
             f = self.cleaned_data.get("attachment")
             if f: Attachment.objects.create(payment=obj, file=f, original_name=f.name[:255])
         return obj
+
+CARD_NUMBER = re.compile(r"(?:\d[ -]?){12,}")  # 12+ digits, with or without spaces or dashes
+
+class PaymentCardForm(forms.ModelForm):
+    class Meta:
+        model = PaymentCard
+        fields = ["issuer", "name", "active"]
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.user = user
+        if user: self.instance.owner = user
+        self.fields["name"].required = False
+        self.fields["name"].help_text = "A nickname you'll recognize, such as “TD Aeroplan Visa”. Leave empty to use the company's name. Never the card number."
+    def clean(self):
+        data = super().clean()
+        name = (data.get("name") or "").strip()
+        issuer = data.get("issuer")
+        if not name:
+            if issuer == "other": self.add_error("name", "Give a custom card a name, such as “Costco Mastercard”.")
+            elif issuer: name = CARD_ISSUER_LABELS[issuer]
+        if CARD_NUMBER.search(name): self.add_error("name", "That looks like a card number. A nickname is enough; don't store card numbers here.")
+        duplicate = PaymentCard.objects.filter(owner=self.user, name__iexact=name)
+        if self.instance.pk: duplicate = duplicate.exclude(pk=self.instance.pk)
+        if name and duplicate.exists(): self.add_error("name", "You already have a card with this name.")
+        data["name"] = name
+        return data
+    def save(self, commit=True):
+        card = super().save(False)
+        card.owner, card.name = self.user, self.cleaned_data["name"]
+        if commit: card.save()
+        return card
+
+class MarkPaidForm(forms.Form):
+    """How and when a bill was paid. "Paid with" is one list: your cards first, then the other ways to pay."""
+    paid_with = forms.ChoiceField(label="Paid with", required=False)
+    payment_date = forms.DateField(label="Date paid", widget=DateInput())
+    OTHER_WAYS = [("credit_card", "Credit card (not in my list)"), ("bank_transfer", "Bank transfer"), ("debit", "Debit"),
+                  ("auto_pay", "Auto pay"), ("cash", "Cash"), ("cheque", "Cheque"), ("other", "Other")]
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cards = {str(c.pk): c for c in PaymentCard.objects.filter(owner=user, active=True)}
+        choices = [("", "Not recorded")]
+        if self.cards: choices.append(("Credit cards", [(f"card:{pk}", c.name) for pk, c in self.cards.items()]))
+        choices.append(("Other ways", [(f"method:{value}", label) for value, label in self.OTHER_WAYS]))
+        self.fields["paid_with"].choices = choices
+    def clean_paid_with(self):
+        """Returns (payment_method, card)."""
+        kind, _, value = self.cleaned_data["paid_with"].partition(":")
+        if kind == "card": return "credit_card", self.cards[value]  # ChoiceField already checked it's one of the user's
+        if kind == "method": return value, None
+        return "", None
 
 class MultipleFileInput(forms.ClearableFileInput):
     allow_multiple_selected = True

@@ -10,6 +10,7 @@
 <a href="{% url 'property_list' %}" {% if current|slice:":8" == 'property' %}aria-current="page"{% endif %}>Properties</a>
 <a href="{% url 'account_list' %}" {% if current|slice:":7" == 'account' %}aria-current="page"{% endif %}>Accounts</a>
 <a href="{% url 'payment_list' %}" {% if current|slice:":7" == 'payment' or current == 'bill_import' %}aria-current="page"{% endif %}>Payments</a>
+<a href="{% url 'card_list' %}" {% if current|slice:":5" == 'card_' %}aria-current="page"{% endif %}>Cards</a>
 <a href="{% url 'reports' %}" {% if current == 'reports' %}aria-current="page"{% endif %}>Reports</a>
 <a href="{% url 'reminders' %}" {% if current == 'reminders' %}aria-current="page"{% endif %}>Reminders</a>
 <a href="{% url 'provider_list' %}" {% if current|slice:":8" == 'provider' %}aria-current="page"{% endif %}>Providers</a>
